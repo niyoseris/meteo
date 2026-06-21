@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Arama{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>İstediğin bölgenin tüm hava verisi</h1>
+  <p class="muted">Şehir adı yaz ya da haritadan seç — tahmin, hava kalitesi, deniz, taşkın ve rakım tek sayfada.</p>
+
+  <form class="search" id="place-form" action="{{ url_for('weather_page') }}" method="get" role="search">
+    <input type="search" name="place" placeholder="Örn: İstanbul, Berlin, Tokyo"
+           autocomplete="off" list="places" id="place-input">
+    <datalist id="places"></datalist>
+    <button type="submit">Getir</button>
+  </form>
+
+  <details class="adv">
+    <summary>Gelişmiş</summary>
+    <form id="coord-form" action="{{ url_for('weather_page') }}" method="get">
+      <label>Enlem <input type="number" step="0.0001" name="lat" id="lat-input"></label>
+      <label>Boylam <input type="number" step="0.0001" name="lon" id="lon-input"></label>
+      <label>Ad <input type="text" name="name" id="name-input" placeholder="opsiyonel"></label>
+      <label>Gün <input type="number" name="days" value="7" min="1" max="16"></label>
+      <button type="submit">Koordinattan getir</button>
+    </form>
+  </details>
+</section>
+
+<section class="mapwrap">
+  <h3>🗺️ Haritadan konum seç</h3>
+  <p class="muted">Haritaya tıkla — enlem/boylam yukarıdaki alanlara dolar, yer adı OSM'den bulunur.</p>
+  <div id="map"></div>
+  <div id="pick-info" class="pick-info hidden"></div>
+  <button id="pick-go" class="btn" disabled>Seçili konumu getir →</button>
+</section>
+
+<section class="cards">
+  <div class="card">
+    <h3>🌡️ Tahmin</h3>
+    <p>Anlık, saatlik ve günlük tahmin — sıcaklık, nem, rüzgâr, yağış, UV.</p>
+  </div>
+  <div class="card">
+    <h3>💨 Hava kalitesi</h3>
+    <p>PM2.5/PM10, ozon, NO₂, SO₂ ve AQI (ABD/AB indeksi).</p>
+  </div>
+  <div class="card">
+    <h3>🌊 Deniz & Taşkın</h3>
+    <p>Dalga yüksekliği/yön/periyot ve nehir debisi tahmini.</p>
+  </div>
+  <div class="card">
+    <h3>⛰️ Rakım</h3>
+    <p>Seçilen noktanın denizden yüksekliği (metre).</p>
+  </div>
+</section>
+
+<section class="api-hint">
+  <h3>JSON API</h3>
+  <pre><code>GET /api/places?name=İstanbul
+GET /api/reverse?lat=41.01&lon=28.95
+GET /api/weather?place=İstanbul&days=7
+GET /api/weather?lat=41.01&lon=28.95&sections=forecast,air_quality
+GET /api/historical?place=İzmir&start=2025-01-01&end=2025-01-31
+GET /api/raw?kind=forecast&latitude=41.01&longitude=28.95&current=true</code></pre>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+(function () {
+  const map = L.map('map').setView([39.0, 35.0], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> katkıda bulunanlar'
+  }).addTo(map);
+
+  let marker = null;
+  const latInput = document.getElementById('lat-input');
+  const lonInput = document.getElementById('lon-input');
+  const nameInput = document.getElementById('name-input');
+  const info = document.getElementById('pick-info');
+  const goBtn = document.getElementById('pick-go');
+
+  function setPick(lat, lon, name, context) {
+    latInput.value = lat.toFixed(4);
+    lonInput.value = lon.toFixed(4);
+    nameInput.value = name || '';
+    const label = name || (lat.toFixed(4) + ', ' + lon.toFixed(4));
+    const ctx = context ? `  <span class="muted">— ${context}</span>` : '';
+    info.innerHTML = `📍 <b>${label}</b>${ctx} <span class="muted">(${lat.toFixed(4)}, ${lon.toFixed(4)})</span>`;
+    info.classList.remove('hidden');
+    goBtn.disabled = false;
+  }
+
+  async function reverseGeocode(lat, lon) {
+    try {
+      const r = await fetch(`/api/reverse?lat=${lat}&lon=${lon}`);
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) { return null; }
+  }
+
+  map.on('click', async function (e) {
+    const { lat, lng } = e.latlng;
+    if (marker) marker.setLatLng(e.latlng);
+    else marker = L.marker(e.latlng).addTo(map);
+    setPick(lat, lng, null, null);
+    const d = await reverseGeocode(lat, lng);
+    if (d) {
+      setPick(lat, lng, d.name, d.context);
+      // Marker'a tıklanan noktanın tam adresini bağla.
+      if (marker) marker.bindPopup(d.display_name || d.name).openPopup();
+    } else {
+      setPick(lat, lng, lat.toFixed(4) + ', ' + lng.toFixed(4), null);
+    }
+  });
+
+  // "Seçili konumu getir" → koordinat formunu gönder.
+  goBtn.addEventListener('click', function () {
+    document.getElementById('coord-form').submit();
+  });
+
+  // Otomatik tamamlama — /api/places üzerinden.
+  const input = document.getElementById('place-input');
+  const list = document.getElementById('places');
+  let timer = null;
+  input.addEventListener('input', function () {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 2) return;
+    timer = setTimeout(async () => {
+      try {
+        const r = await fetch('/api/places?name=' + encodeURIComponent(q) + '&count=8');
+        if (!r.ok) return;
+        const items = await r.json();
+        list.innerHTML = items.map(it =>
+          `<option value="${it.name}, ${it.country}" data-lat="${it.latitude}" data-lon="${it.longitude}">` +
+          `${it.latitude}, ${it.longitude}</option>`).join('');
+      } catch (e) {}
+    }, 250);
+  });
+
+  // Arama formu gönderilirken, datalist'ten seçilen yerin koordinatını
+  // haritada göster (yer adı place= olarak gider, sunucu geocode eder).
+  document.getElementById('place-form').addEventListener('submit', function () {
+    if (marker && latInput.value) { /* koordinat formu kullanılmıyor */ }
+  });
+})();
+</script>
+{% endblock %}

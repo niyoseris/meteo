@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Karşılaştır{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>🔍 Karşılaştırma modu</h1>
+  <p class="muted">Haritaya tıklayarak birden fazla nokta ekle (en az 2, en fazla 8). Seçtiklerin anlık hava, hava kalitesi ve rakım verileri yan yana karşılaştırılır.</p>
+</section>
+
+<div class="compare-layout">
+  <section class="mapwrap">
+    <div id="map"></div>
+    <div class="compare-controls">
+      <span id="point-count" class="muted small">0 nokta seçildi</span>
+      <button id="compare-go" class="btn" disabled>Karşılaştır</button>
+      <button id="compare-clear" class="btn ghost">Temizle</button>
+    </div>
+  </section>
+
+  <aside class="points-list panel">
+    <h3>Seçili noktalar</h3>
+    <ol id="points"></ol>
+    <p class="muted small" id="points-empty">Henüz nokta yok — haritaya tıkla.</p>
+  </aside>
+</div>
+
+<section id="results" class="hidden">
+  <div class="table-wrap">
+    <table class="compare">
+      <thead id="compare-head"></thead>
+      <tbody id="compare-body"></tbody>
+    </table>
+  </div>
+  <div class="aq-legend">
+    <span class="muted small">Hava kalitesi hücre renkleri:</span>
+    <span class="badge good">İyi</span>
+    <span class="badge moderate">Orta</span>
+    <span class="badge poor">Kötü</span>
+    <span class="badge verypoor">Çok kötü</span>
+  </div>
+  <details class="panel glossary">
+    <summary>📖 Metrik açıklamaları ve kabul edilen referanslar</summary>
+    <div class="table-wrap">
+      <table class="aq">
+        <thead><tr><th>Metrik</th><th>Nedir?</th><th>Kabul edilen referans</th></tr></thead>
+        <tbody id="glossary-body"></tbody>
+      </table>
+    </div>
+  </details>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+(function () {
+  const map = L.map('map').setView([39.0, 35.0], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap katkıda bulunanlar'
+  }).addTo(map);
+
+  const points = [];          // {lat, lon, name, marker}
+  const MAX = 8;
+  const listEl = document.getElementById('points');
+  const emptyEl = document.getElementById('points-empty');
+  const countEl = document.getElementById('point-count');
+  const goBtn = document.getElementById('compare-go');
+  const clearBtn = document.getElementById('compare-clear');
+
+  function render() {
+    listEl.innerHTML = '';
+    if (points.length === 0) {
+      emptyEl.classList.remove('hidden');
+    } else {
+      emptyEl.classList.add('hidden');
+      points.forEach((p, i) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span><b>${i + 1}.</b> ${p.name} <span class="muted small">(${p.lat.toFixed(3)}, ${p.lon.toFixed(3)})</span></span>`;
+        const rm = document.createElement('button');
+        rm.className = 'btn ghost x';
+        rm.textContent = '✕';
+        rm.onclick = () => { map.removeLayer(p.marker); points.splice(i, 1); renumber(); render(); };
+        li.appendChild(rm);
+        listEl.appendChild(li);
+      });
+    }
+    countEl.textContent = `${points.length} nokta seçildi`;
+    goBtn.disabled = points.length < 2;
+  }
+
+  function renumber() {
+    points.forEach((p, i) => p.marker.bindTooltip(String(i + 1), {permanent: true, direction: 'top'}));
+  }
+
+  async function reverseName(lat, lon) {
+    try {
+      const r = await fetch(`/api/reverse?lat=${lat}&lon=${lon}`);
+      if (!r.ok) return null;
+      const d = await r.json();
+      return d.name || null;
+    } catch (e) { return null; }
+  }
+
+  map.on('click', async function (e) {
+    if (points.length >= MAX) return;
+    const { lat, lng } = e.latlng;
+    const marker = L.marker(e.latlng).addTo(map);
+    const p = { lat, lon: lng, name: `${lat.toFixed(3)}, ${lng.toFixed(3)}`, marker };
+    points.push(p);
+    renumber();
+    render();
+    const name = await reverseName(lat, lng);
+    if (name) { p.name = name; render(); }
+  });
+
+  goBtn.addEventListener('click', async function () {
+    goBtn.disabled = true;
+    goBtn.textContent = 'Yükleniyor…';
+    try {
+      const payload = { points: points.map(p => ({name: p.name, lat: p.lat, lon: p.lon})) };
+      const r = await fetch('/api/compare', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json();
+      if (!r.ok) { alert(data.error || 'Hata'); return; }
+      renderResults(data);
+    } catch (e) { alert('İstek başarısız'); }
+    finally {
+      goBtn.disabled = points.length < 2;
+      goBtn.textContent = 'Karşılaştır';
+    }
+  });
+
+  clearBtn.addEventListener('click', function () {
+    points.forEach(p => map.removeLayer(p.marker));
+    points.length = 0;
+    render();
+    document.getElementById('results').classList.add('hidden');
+  });
+
+  function fmt(v, unit) {
+    if (v === null || v === undefined) return '<span class="muted">—</span>';
+    return `${v}${unit ? ' ' + unit : ''}`;
+  }
+
+  function renderResults(data) {
+    const head = document.getElementById('compare-head');
+    const body = document.getElementById('compare-body');
+    const thead = `<tr><th>Metrik</th>` +
+      data.points.map(p => `<th title="${p.lat}, ${p.lon}">${p.name}</th>`).join('') + `</tr>`;
+    head.innerHTML = thead;
+
+    body.innerHTML = '';
+    const glossary = document.getElementById('glossary-body');
+    glossary.innerHTML = '';
+    for (const row of data.rows) {
+      const tr = document.createElement('tr');
+      // Etiket hücresi: hover'da "nedir", altta referans.
+      const refHtml = row.ref && row.ref !== '—'
+        ? `<div class="muted small ref-line" title="${row.ref}">ref: ${row.ref}</div>` : '';
+      let cells = `<td class="metric-label" title="${row.what}"><b>${row.label}</b>` +
+        `<div class="muted small">${row.unit}</div>${refHtml}</td>`;
+      row.values.forEach((v, i) => {
+        const cls = row.ratings && row.ratings[i] ? ` class="cell-${row.ratings[i]}"` : '';
+        cells += `<td${cls}>${fmt(v, row.unit)}</td>`;
+      });
+      tr.innerHTML = cells;
+      body.appendChild(tr);
+
+      // Sözlük satırı.
+      const gr = document.createElement('tr');
+      gr.innerHTML = `<td><b>${row.label}</b></td>` +
+        `<td class="aq-what">${row.what || '—'}</td>` +
+        `<td class="muted small">${row.ref || '—'}</td>`;
+      glossary.appendChild(gr);
+    }
+    document.getElementById('results').classList.remove('hidden');
+    document.getElementById('results').scrollIntoView({behavior: 'smooth'});
+  }
+
+  render();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,308 @@
+{% extends "base.html" %}
+{% block title %}{{ location.name if location else 'Sonuç' }}{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+{% endblock %}
+{% block content %}
+
+{% if error %}
+  <section class="err">
+    <h2>Sorun oluştu</h2>
+    <p>{{ error }}</p>
+    <a class="btn" href="{{ url_for('index') }}">← Yeni arama</a>
+  </section>
+{% else %}
+  {% set fc = data.forecast %}
+  {% set aq = data.air_quality %}
+  {% set mar = data.marine %}
+  {% set fld = data.flood %}
+  {% set elv = data.elevation %}
+
+  <section class="loc-head">
+    <div>
+      <h1>{{ location.name }}</h1>
+      <p class="muted">
+        {{ location.latitude }}, {{ location.longitude }}
+        {% if location.country %} · {{ location.country }}{% endif %}
+        · {{ days }} gün
+      </p>
+    </div>
+    <a class="btn ghost" href="{{ url_for('index') }}">← Yeni arama</a>
+  </section>
+
+  {% if location %}
+  <section class="panel map-panel">
+    <div id="map"></div>
+  </section>
+  {% endif %}
+
+  {# ---------------- Anlık ---------------- #}
+  {% if fc and 'current' in fc %}
+  {% set c = fc.current %}
+  <section class="current">
+    <div class="big">
+      <span class="emo">{{ c.weather_code_emoji }}</span>
+      <span class="temp">{{ c.temperature_2m }}°</span>
+    </div>
+    <div class="desc">{{ c.weather_code_label }}</div>
+    {% if c.time %}
+    <div class="measured">⏱️ Son ölçüm: {{ c.time | dt }} <span class="muted">(yerel saat)</span></div>
+    {% endif %}
+    <div class="grid metrics">
+      <div><span>Hissedilen</span><b>{{ c.apparent_temperature }}°</b></div>
+      <div><span>Nem</span><b>{{ c.relative_humidity_2m }}%</b></div>
+      <div><span>Rüzgâr</span><b>{{ c.wind_speed_10m }} km/s</b></div>
+      <div><span>Basınç</span><b>{{ c.pressure_msl }} hPa</b></div>
+      <div><span>Bulut</span><b>{{ c.cloud_cover }}%</b></div>
+      <div><span>Yağış</span><b>{{ c.precipitation }} mm</b></div>
+    </div>
+  </section>
+  {% endif %}
+
+  {# ---------------- Günlük ---------------- #}
+  {% if fc and 'daily' in fc %}
+  {% set d = fc.daily %}
+  <section class="panel">
+    <h2>📅 Günlük tahmin</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Tarih</th><th></th><th>En yk.</th><th>En dk.</th>
+          <th>Yağış</th><th>UV</th><th>Rüzgâr</th><th>Gün doğumu</th><th>Gün batımı</th>
+        </tr></thead>
+        <tbody>
+        {% for i in range(d.time|length) %}
+          <tr>
+            <td>{{ d.time[i] }}</td>
+            <td class="emo">{{ d.weather_code_emojis[i] if d.weather_code_emojis else '' }}</td>
+            <td>{{ d.temperature_2m_max[i] }}°</td>
+            <td>{{ d.temperature_2m_min[i] }}°</td>
+            <td>{{ d.precipitation_sum[i] }} mm</td>
+            <td>{{ d.uv_index_max[i] }}</td>
+            <td>{{ d.wind_speed_10m_max[i] }}</td>
+            <td>{{ (d.sunrise[i]|string).split('T')[1] if d.sunrise else '' }}</td>
+            <td>{{ (d.sunset[i]|string).split('T')[1] if d.sunset else '' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {# ---------------- Hava kalitesi ---------------- #}
+  {% if aq_metrics %}
+  <section class="panel">
+    <h2>💨 Hava kalitesi (anlık)</h2>
+    {% if aq and aq.current and aq.current.time %}
+    <div class="measured aq-measured">⏱️ Son ölçüm: {{ aq.current.time | dt }} <span class="muted">(yerel saat)</span></div>
+    {% endif %}
+    <p class="muted aq-intro">
+      Her kirletici için "bu nedir", kabul edilen referans değer ve
+      mevcut değerin o referansa göre derecesi (iyi / orta / kötü / çok kötü).
+      Referanslar WHO 2021 kılavuzu ile AB/ABD AQI bantlarıdır.
+    </p>
+    <div class="aq-legend">
+      <span class="badge good">İyi</span>
+      <span class="badge moderate">Orta</span>
+      <span class="badge poor">Kötü</span>
+      <span class="badge verypoor">Çok kötü</span>
+    </div>
+    <div class="table-wrap">
+      <table class="aq">
+        <thead><tr>
+          <th>Kirletici</th><th>Ölçüm</th><th>Derece</th><th>Nedir?</th><th>Referans (kabul edilen)</th>
+        </tr></thead>
+        <tbody>
+        {% for m in aq_metrics %}
+          <tr>
+            <td><b>{{ m.label }}</b><div class="muted small">{{ m.unit }}</div></td>
+            <td class="aq-val">
+              {% if m.ok %}{{ m.value }} {{ m.unit }}{% else %}<span class="muted">—</span>{% endif %}
+            </td>
+            <td>
+              {% if m.ok %}
+                <span class="badge {{ m.rating_class }}">{{ m.rating }}</span>
+              {% else %}<span class="muted">—</span>{% endif %}
+            </td>
+            <td class="aq-what">{{ m.what }}</td>
+            <td class="muted small">{{ m.ref }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% elif aq and 'error' in aq %}
+  <section class="panel"><h2>💨 Hava kalitesi</h2><p class="muted">Bu konum için hava kalitesi verisi yok.</p></section>
+  {% endif %}
+
+  {# ---------------- Veri yorumu (otomatik yüklenir) ---------------- #}
+  {% if location %}
+  <section class="panel" id="analyze-panel">
+    <h2>🔬 Veri yorumu — arka plan mı, yerel sinyal mi?</h2>
+    <p class="muted aq-intro">
+      Uygulama bu noktayı ve çevresindeki 4 komşu noktayı (~model çözünürlüğü
+      kadar uzakta) sorgular. Değer komşularla aynıysa <b>bölgesel arka plan /
+      ızgara ortalamasıdır</b> (tek baca/trafik gibi nokta kaynakları görünmez);
+      merkez belirgin aykırıysa <b>yerel kaynak sinyali olabilir</b>.
+      <span class="loader" id="analyze-loader">hesaplanıyor…</span>
+    </p>
+    <div id="analyze-summary" class="analyze-summary hidden"></div>
+    <div id="analyze-source" class="muted small source-note hidden"></div>
+    <div class="table-wrap hidden" id="analyze-wrap">
+      <table class="aq analyze">
+        <thead><tr>
+          <th>Kirletici</th><th>Ölçüm</th><th>Arka plan</th>
+          <th>Karar</th><th>Açıklama</th>
+        </tr></thead>
+        <tbody id="analyze-body"></tbody>
+      </table>
+    </div>
+    <div class="muted small analyze-hint hidden" id="analyze-hint"></div>
+  </section>
+  {% endif %}
+
+  {# ---------------- Deniz ---------------- #}
+  {% if mar and 'hourly' in mar and 'error' not in mar %}
+  {% set mh = mar.hourly %}
+  <section class="panel">
+    <h2>🌊 Deniz (saatlik)</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Saat</th><th>Dalga</th><th>Yön</th><th>Periyot</th></tr></thead>
+        <tbody>
+        {% for i in range(0, mh.time|length, 3) %}
+          <tr>
+            <td>{{ (mh.time[i]|string).replace('T', ' ') }}</td>
+            <td>{{ mh.wave_height[i] }} m</td>
+            <td>{{ mh.wave_direction[i] }}°</td>
+            <td>{{ mh.wave_period[i] }} sn</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% elif mar and 'error' in mar %}
+  <section class="panel"><h2>🌊 Deniz</h2><p class="muted">Bu konum için deniz verisi yok (kara içi nokta).</p></section>
+  {% endif %}
+
+  {# ---------------- Taşkın ---------------- #}
+  {% if fld and 'daily' in fld and 'error' not in fld %}
+  {% set fd = fld.daily %}
+  <section class="panel">
+    <h2>💧 Nehir debisi (taşkın)</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Tarih</th><th>Debi (m³/s)</th></tr></thead>
+        <tbody>
+        {% for i in range(0, fd.time|length, 7) %}
+          <tr><td>{{ fd.time[i] }}</td><td>{{ fd.river_discharge[i] }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% elif fld and 'error' in fld %}
+  <section class="panel"><h2>💧 Taşkın</h2><p class="muted">Bu konum için taşkın verisi yok.</p></section>
+  {% endif %}
+
+  {# ---------------- Rakım ---------------- #}
+  {% if elv and 'elevation' in elv %}
+  <section class="panel">
+    <h2>⛰️ Rakım</h2>
+    <p class="big-num">{{ elv.elevation[0] }} m</p>
+  </section>
+  {% endif %}
+
+  {# ---------------- Ham veri ---------------- #}
+  <section class="panel raw">
+    <details>
+      <summary>Ham JSON veri</summary>
+      <pre><code>{{ data | tojson(indent=2) }}</code></pre>
+    </details>
+  </section>
+
+{% endif %}
+
+{% if location %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+(function () {
+  const lat = {{ location.latitude }};
+  const lon = {{ location.longitude }};
+  const map = L.map('map').setView([lat, lon], 10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap katkıda bulunanlar'
+  }).addTo(map);
+  L.marker([lat, lon]).addTo(map)
+   .bindPopup('{{ location.name | tojson | safe }}').openPopup();
+})();
+
+// --- Veri yorumu (arka plan mı, yerel sinyal mi) ---
+(function () {
+  const lat = {{ location.latitude }};
+  const lon = {{ location.longitude }};
+  const verdictText = {
+    uniform: "Arka plan",
+    local_high: "Yerel ↑",
+    local_low: "Yerel ↓",
+    gradient: "Gradyan",
+    no_data: "Veri yok",
+  };
+  const verdictClass = {
+    uniform: "good", local_high: "poor", local_low: "moderate",
+    gradient: "moderate", no_data: "verypoor",
+  };
+  const fmt = (v) => (v === null || v === undefined) ? "—" : v;
+
+  fetch(`/api/analyze?lat=${lat}&lon=${lon}`)
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('analyze-loader').classList.add('hidden');
+      if (d.error) {
+        document.getElementById('analyze-summary').textContent = "Hata: " + d.error;
+        document.getElementById('analyze-summary').classList.remove('hidden');
+        return;
+      }
+      const sum = document.getElementById('analyze-summary');
+      sum.textContent = d.summary;
+      sum.classList.remove('hidden');
+
+      const src = d.source;
+      if (src) {
+        document.getElementById('analyze-source').innerHTML =
+          `Veri kaynağı: ${src.provider} · ${src.resolution}. ${src.caveat}`;
+        document.getElementById('analyze-source').classList.remove('hidden');
+      }
+
+      const body = document.getElementById('analyze-body');
+      for (const r of d.rows) {
+        if (r.value === null) continue;
+        const bg = r.arka_plan && r.arka_plan[0] !== null
+          ? `${r.arka_plan[0]}–${r.arka_plan[1]} ${r.unit}` : "—";
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><b>${r.label}</b></td>
+          <td>${fmt(r.value)} ${r.unit}</td>
+          <td class="muted small">${bg}</td>
+          <td><span class="badge ${verdictClass[r.verdict] || ''}">${verdictText[r.verdict] || r.verdict}</span></td>
+          <td class="aq-what">${r.verdict_note} <span class="muted small">— ${r.kaynak}</span></td>`;
+        body.appendChild(tr);
+      }
+      document.getElementById('analyze-wrap').classList.remove('hidden');
+    })
+    .catch(() => {
+      document.getElementById('analyze-loader').classList.add('hidden');
+      document.getElementById('analyze-summary').textContent = "Yorum yüklenemedi.";
+      document.getElementById('analyze-summary').classList.remove('hidden');
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

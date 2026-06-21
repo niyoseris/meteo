@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}meteo{% endblock %} — Open-Meteo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}">🌤️ meteo</a>
+    <nav>
+      <a href="{{ url_for('index') }}">Ara</a>
+      <a href="{{ url_for('compare_page') }}">Karşılaştır</a>
+      <a href="{{ url_for('scan_page') }}">Tara</a>
+      <a href="https://open-meteo.com/" target="_blank" rel="noopener">API ↗</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="foot">
+    Veri: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
+    · Anahtar gerektirmez · ticari olmayan kullanım için ücretsiz
+  </footer>
+</body>
+</html>

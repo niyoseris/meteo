@@ -1,0 +1,486 @@
+{% extends "base.html" %}
+{% block title %}Alan tarama{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>🗺️ Alan tarama — harita üstünde renklendirme</h1>
+  <p class="muted">Haritada bir dikdörtgen alan çiz (iki köşeye tıkla), bir değişken seç. Uygulama alanı ızgara noktalarıyla tarar ve her hücrenin değerini renkle maskeler: düşük = mavi, yüksek = kırmızı.</p>
+</section>
+
+<div class="scan-layout">
+  <section class="mapwrap">
+    <div id="map"></div>
+    <div class="scan-controls">
+      <button id="draw-btn" class="btn">📐 Alan çiz</button>
+      <button id="clear-btn" class="btn ghost">Temizle</button>
+    </div>
+  </section>
+
+  <aside class="panel scan-form">
+    <h3>Tarama ayarları</h3>
+    <label>Veri kaynağı
+      <select id="source-select">
+        <optgroup label="Open-Meteo modelleri (anahtarsız)">
+          {% for s in sources if s.status == 'integrated' and s.backend == 'openmeteo' %}
+          <option value="{{ s.id }}">{{ s.label }}</option>
+          {% endfor %}
+        </optgroup>
+        <optgroup label="Diğer anahtarsız kaynaklar">
+          {% for s in sources if s.status == 'integrated' and s.backend != 'openmeteo' %}
+          <option value="{{ s.id }}">{{ s.label }}</option>
+          {% endfor %}
+        </optgroup>
+        <optgroup label="Alternatif (anahtar gerekir)">
+          {% for s in sources if s.status == 'external' %}
+          <option value="{{ s.id }}">{{ s.label }}</option>
+          {% endfor %}
+        </optgroup>
+      </select>
+    </label>
+    <div id="source-info" class="source-info"></div>
+    <label id="var-label">Değişken
+      <select id="var-select"></select>
+    </label>
+    <label id="grid-label">Izgara yoğunluğu
+      <select id="grid-select"></select>
+      <span id="grid-readout" class="muted small"></span>
+    </label>
+    <label>Maske opaklığı
+      <input type="range" id="opacity-select" min="0.2" max="1" step="0.05" value="0.75">
+    </label>
+    <label id="radar-frame-label" class="hidden">Radar anı
+      <select id="radar-frame"></select>
+    </label>
+    <div id="sel-info" class="muted small">Henüz alan seçilmedi. “Alan çiz”e basıp iki köşeye tıkla.</div>
+    <button id="scan-go" class="btn" disabled>Tara</button>
+    <div id="scan-status" class="muted small"></div>
+    <div id="scan-source" class="muted small source-note hidden"></div>
+  </aside>
+</div>
+
+<section id="legend" class="hidden">
+  <div class="legend-bar"></div>
+  <div class="legend-labels"><span id="leg-min">0</span><span id="leg-mid"></span><span id="leg-max">1</span></div>
+  <p class="muted small" id="leg-unit"></p>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>window.SCAN_SOURCES = {{ sources | tojson | safe }};</script>
+<script>window.SCAN_VARIABLES = {{ variables | tojson | safe }};</script>
+<script>window.SCAN_DEFAULTS = {variable: {{ default_variable | tojson }}, source: {{ default_source | tojson }}};</script>
+<script>
+(function () {
+  const SOURCES = window.SCAN_SOURCES || [];
+  const VAR_CATALOG = window.SCAN_VARIABLES || [];
+  const byId = id => SOURCES.find(s => s.id === id) || {};
+  // Bir kaynağın seçili değişkeni ölçüp ölçmediği. Radar/external kaynaklar
+  // değişken tabanlı olmadığı için uyumsuzluk devre dışı bırakme mantığına girmez.
+  const measuresVar = (src, key) => (src.variables || []).some(v => v.key === key);
+
+  const sourceSel = document.getElementById('source-select');
+  const varSel = document.getElementById('var-select');
+  const varLabel = document.getElementById('var-label');
+  const gridLabel = document.getElementById('grid-label');
+  const sourceInfo = document.getElementById('source-info');
+  const gridSel = document.getElementById('grid-select');
+
+  function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+  function renderSourceInfo(src) {
+    if (!src || !src.id) { sourceInfo.innerHTML = ''; return; }
+    const external = src.status === 'external';
+    const rows = [
+      ['Veri yolu', src.via || '—'],
+      ['Sağlayıcı', src.provider],
+      ['Ölçer', src.measures],
+      ['Çözünürlük', src.resolution],
+      ['Veri neyi temsil eder', src.cell_area],
+      ['Kapsam', src.coverage],
+      ['Güncelleme', src.update_freq],
+    ].map(([k, v]) => `<div class="si-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+    const banner = external
+      ? `<div class="si-external">Bu kaynak henüz entegre edilmedi — ek anahtar/entegrasyon gerekir. Tarama için seçilemez; bilgi amaçlıdır.</div>`
+      : '';
+    sourceInfo.innerHTML =
+      `<div class="si-kind">${esc(src.kind_label)}</div>${rows}` +
+      (src.caveat ? `<div class="si-caveat">${esc(src.caveat)}</div>` : '') + banner;
+  }
+
+  // Değişken listesi TÜM katalogdan kurulur (kaynaktan değil) — partiküller,
+  // UV, AQI her zaman görünür. Bölüm bazında optgroup'lanır; hava kalitesi
+  // en üstte, böylece "yok" sanılan değişkenler hemen görünür hâle gelir.
+  const SECTION_LABELS = {
+    air_quality: 'Hava kalitesi (partikül · UV · AQ)',
+    forecast: 'Hava tahmini',
+    elevation: 'Yükseklik',
+  };
+  const SECTION_ORDER = ['air_quality', 'forecast', 'elevation'];
+  // Bir bölüm için "en anlaşılır" varsayılan değişken — kaynak değişince
+  // değişken buradan seçilir (SO₂ değil PM2.5, sıcaklık, yükseklik).
+  const SECTION_DEFAULT_VAR = {
+    air_quality: 'pm2_5', forecast: 'temperature_2m', elevation: 'elevation',
+  };
+  function buildVarSelect() {
+    varSel.innerHTML = '';
+    SECTION_ORDER.forEach(sec => {
+      const vars = VAR_CATALOG.filter(v => v.section === sec);
+      if (!vars.length) return;
+      const og = document.createElement('optgroup');
+      og.label = SECTION_LABELS[sec] || sec;
+      vars.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.key;
+        o.textContent = v.label + (v.unit ? ` (${v.unit})` : '');
+        og.appendChild(o);
+      });
+      varSel.appendChild(og);
+    });
+  }
+
+  // Seçili değişkeni ölçen entegre kaynaklar, çözünürlüğüne göre en inceden
+  // başlayarak sıralanır (en ince = en yerel gradyan).
+  function compatibleSources(key) {
+    return SOURCES
+      .filter(s => s.status === 'integrated' && s.mode !== 'radar' && measuresVar(s, key))
+      .sort((a, b) => (a.min_cell_deg ?? 9e9) - (b.min_cell_deg ?? 9e9));
+  }
+
+  function defaultVarForSource(src) {
+    const pref = src.section && SECTION_DEFAULT_VAR[src.section];
+    if (pref && measuresVar(src, pref)) return pref;
+    return src.variables && src.variables[0] ? src.variables[0].key : varSel.value;
+  }
+
+  // İki denetim de her zaman tam seçilebilir; uyumsuzlukta DİĞER denetim
+  // otomatik eşitlenir (kimse gri/devre dışı kalmaz):
+  //  - değişken değişince, seçili kaynak ölçmüyorsa en ince uyumlu kaynağa geç.
+  //  - kaynak değişince, yeni kaynak seçili değişkeni ölçmüyorsa değişkeni
+  //    o kaynağın varsayılanına çevir.
+  function onVarChange(key) {
+    const cur = byId(sourceSel.value);
+    if (cur && cur.status === 'integrated' && cur.mode !== 'radar' && !measuresVar(cur, key)) {
+      const best = compatibleSources(key)[0];
+      if (best) sourceSel.value = best.id;
+    }
+    applySource(sourceSel.value);
+  }
+
+  function onSourceChange(id) {
+    const src = byId(id);
+    applySource(id);
+    if (src && src.status === 'integrated' && src.mode !== 'radar' &&
+        !measuresVar(src, varSel.value)) {
+      varSel.value = defaultVarForSource(src);  // programatik → change tetiklenmez
+    }
+  }
+
+  const GRID_BASE = [4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 56, 64];
+  const gridReadout = document.getElementById('grid-readout');
+
+  function maxGridFor(src, latSpan) {
+    // Backend _max_rows_for ile aynı formül: hücre kaynağın çözünürlüğünden
+    // ince olmasın → interpole örneklemeyi önler.
+    if (!src || !src.min_cell_deg) return 64;
+    if (latSpan <= 0) return 2;
+    return Math.max(2, Math.min(64, Math.floor(latSpan / src.min_cell_deg) + 1));
+  }
+
+  function updateGridOptions() {
+    const src = byId(sourceSel.value);
+    const latSpan = bbox ? (bbox.north - bbox.south) : 0;
+    const maxGrid = bbox ? maxGridFor(src, latSpan) : 16;  // alan yokken varsayılan görünüm
+    gridSel.innerHTML = '';
+    const vals = [...new Set([...GRID_BASE.filter(v => v <= maxGrid), maxGrid])].sort((a,b)=>a-b);
+    vals.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      const isMax = v === maxGrid && v >= 32;
+      opt.textContent = `${v} × ${v}` + (isMax ? ' (en ince — bu kaynakta mümkün)' : (v >= 32 ? ' (ince)' : ''));
+      gridSel.appendChild(opt);
+    });
+    // mantıklı bir varsayılan: 10, değilse en yakın küçük, en az 2
+    let def = Math.min(10, maxGrid);
+    if (![...gridSel.options].some(o => +o.value === def)) def = +gridSel.options[0].value;
+    gridSel.value = String(def);
+    updateGridReadout();
+  }
+
+  function updateGridReadout() {
+    const src = byId(sourceSel.value);
+    const latSpan = bbox ? (bbox.north - bbox.south) : 0;
+    if (!latSpan) { gridReadout.textContent = ''; return; }
+    const rows = +gridSel.value || 2;
+    const cellDeg = rows > 1 ? latSpan / (rows - 1) : latSpan;
+    const cellKm = cellDeg * 111;
+    const maxGrid = maxGridFor(src, latSpan);
+    gridReadout.textContent = `≈ ${cellKm.toFixed(cellKm < 2 ? 2 : 1)} km hücre · en yüksek ${maxGrid}×${maxGrid}`;
+  }
+
+  const radarFrameLabel = document.getElementById('radar-frame-label');
+  const radarFrameSel = document.getElementById('radar-frame');
+
+  function applySource(id) {
+    const src = byId(id);
+    renderSourceInfo(src);
+    const radar = src.mode === 'radar';
+    // Radar modu: sayısal ızgara/değişken yok; değişken/ızgara UI gizlenir,
+    // frame seçici gösterilir.
+    radarFrameLabel.classList.toggle('hidden', !(radar && src.status === 'integrated'));
+    varLabel.classList.toggle('hidden', radar);
+    gridLabel.classList.toggle('hidden', radar);
+    if (radar) {
+      // radar küresel olduğu için bbox gerekmez.
+      scanGo.disabled = false;
+      scanGo.textContent = 'Radarı göster';
+      gridSel.disabled = true;
+    } else {
+      scanGo.textContent = 'Tara';
+      gridSel.disabled = false;
+      updateGridOptions();
+      if (src.status === 'external') {
+        scanGo.disabled = true;
+      } else {
+        scanGo.disabled = !bbox;  // alan seçilmişse aktif, değilse pasif
+      }
+    }
+  }
+
+  sourceSel.addEventListener('change', () => onSourceChange(sourceSel.value));
+  varSel.addEventListener('change', () => onVarChange(varSel.value));
+  gridSel.addEventListener('change', updateGridReadout);
+
+  const map = L.map('map').setView([39.0, 35.0], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap katkıda bulunanlar'
+  }).addTo(map);
+
+  let drawMode = false;
+  let corner1 = null, corner2 = null;
+  let corner1Marker = null, corner2Marker = null;
+  let selRect = null;
+  let bbox = null;
+  let overlay = L.layerGroup().addTo(map);
+  let radarLayer = null;       // RainViewer tile katmanı
+  let radarFrames = [];        // [{time,path,nowcast}]
+  let radarHost = '';
+
+  const drawBtn = document.getElementById('draw-btn');
+  const clearBtn = document.getElementById('clear-btn');
+  const scanGo = document.getElementById('scan-go');
+  const selInfo = document.getElementById('sel-info');
+  const scanStatus = document.getElementById('scan-status');
+
+  // Sayfa açılışında: değişken katalogunu kur, varsayılan değişkeni seç.
+  // Varsayılan nötr bir tahmin değişkeni (Sıcaklık) → açılışta tahmin modelleri
+  // de CAMS de seçilebilir. Partiküller açılır listede en üstte görünür.
+  buildVarSelect();
+  varSel.value = window.SCAN_DEFAULTS && window.SCAN_DEFAULTS.variable || 'temperature_2m';
+  if (!varSel.value) varSel.value = varSel.options[0] && varSel.options[0].value;
+  applySource(sourceSel.value);
+
+  // RdYlBu ters skalası: 0=mavi(soğuk/düşük) → 1=kırmızı(sıcak/yüksek)
+  const STOPS = [
+    [0.0, [44, 123, 182]], [0.25, [171, 217, 233]],
+    [0.5, [255, 255, 191]], [0.75, [253, 174, 97]], [1.0, [215, 28, 28]],
+  ];
+  function valColor(t) {
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 1; i < STOPS.length; i++) {
+      if (t <= STOPS[i][0]) {
+        const [t0, c0] = STOPS[i - 1], [t1, c1] = STOPS[i];
+        const f = (t - t0) / (t1 - t0);
+        const r = Math.round(c0[0] + f * (c1[0] - c0[0]));
+        const g = Math.round(c0[1] + f * (c1[1] - c0[1]));
+        const b = Math.round(c0[2] + f * (c1[2] - c0[2]));
+        return `rgb(${r},${g},${b})`;
+      }
+    }
+    return `rgb(${STOPS[STOPS.length-1][1].join(',')})`;
+  }
+
+  function resetSelection() {
+    if (corner1Marker) map.removeLayer(corner1Marker);
+    if (corner2Marker) map.removeLayer(corner2Marker);
+    if (selRect) map.removeLayer(selRect);
+    corner1 = corner2 = corner1Marker = corner2Marker = selRect = null;
+    bbox = null;
+    scanGo.disabled = true;
+    selInfo.textContent = 'Henüz alan seçilmedi. “Alan çiz”e basıp iki köşeye tıkla.';
+  }
+
+  function setCorner(latlng, n) {
+    if (n === 1) {
+      corner1 = latlng;
+      corner1Marker = L.marker(latlng).addTo(map);
+    } else {
+      corner2 = latlng;
+      corner2Marker = L.marker(latlng).addTo(map);
+      // Bbox → rectangle.
+      const north = Math.max(corner1.lat, corner2.lat);
+      const south = Math.min(corner1.lat, corner2.lat);
+      const east = Math.max(corner1.lng, corner2.lng);
+      const west = Math.min(corner1.lng, corner2.lng);
+      bbox = {north, south, east, west};
+      selRect = L.rectangle([[south, west], [north, east]],
+        {color: '#2b6cff', weight: 2, fillOpacity: 0.05}).addTo(map);
+      map.fitBounds([[south, west], [north, east]], {padding: [20, 20]});
+      selInfo.innerHTML = `Alan: <b>${south.toFixed(2)},${west.toFixed(2)} → ${north.toFixed(2)},${east.toFixed(2)}</b>`;
+      updateGridOptions();  // alan → dinamik ızgara üst sınırı yenilenir
+      scanGo.disabled = false;
+      drawMode = false;
+      map._container.style.cursor = '';
+    }
+  }
+
+  drawBtn.addEventListener('click', function () {
+    resetSelection();
+    drawMode = true;
+    map._container.style.cursor = 'crosshair';
+    scanStatus.textContent = 'İlk köşeye tıkla…';
+  });
+
+  map.on('click', function (e) {
+    if (!drawMode) return;
+    if (!corner1) { setCorner(e.latlng, 1); scanStatus.textContent = 'İkinci köşeye tıkla…'; }
+    else if (!corner2) { setCorner(e.latlng, 2); scanStatus.textContent = 'Alan seçildi. “Tara”ya bas.'; }
+  });
+
+  clearBtn.addEventListener('click', function () {
+    resetSelection();
+    overlay.clearLayers();
+    removeRadar();
+    document.getElementById('legend').classList.add('hidden');
+    document.getElementById('scan-source').classList.add('hidden');
+    scanStatus.textContent = '';
+  });
+
+  // Opaklık kaydırıcısı — mevcut maskeleri (ve radar katmanını) canlı günceller.
+  document.getElementById('opacity-select').addEventListener('input', function () {
+    const op = parseFloat(this.value);
+    overlay.eachLayer(l => l.setStyle && l.setStyle({fillOpacity: op}));
+    if (radarLayer) radarLayer.setOpacity(op);
+  });
+
+  // --- RainViewer radar görsel katmanı (anahtarsız) ---
+  function removeRadar() {
+    if (radarLayer) { map.removeLayer(radarLayer); radarLayer = null; }
+    radarFrames = [];
+    radarFrameSel.innerHTML = '';
+  }
+
+  function radarTileUrl(frame) {
+    // Renk 2 (universal), options 1_1 (smooth+snow); tileSize 256.
+    return `${radarHost}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+  }
+
+  function showRadarFrame(idx) {
+    const f = radarFrames[idx];
+    if (!f) return;
+    const op = parseFloat(document.getElementById('opacity-select').value);
+    if (radarLayer) map.removeLayer(radarLayer);
+    radarLayer = L.tileLayer(radarTileUrl(f), {
+      opacity: op, maxZoom: 19, tileSize: 256, attribution: 'RainViewer',
+    }).addTo(map);
+    const tag = f.nowcast ? 'nowcast (tahmin)' : 'radar (gerçek)';
+    scanStatus.textContent = `Radar ${tag} · ${new Date(f.time * 1000).toLocaleTimeString('tr-TR')}`;
+  }
+
+  async function loadRadar() {
+    scanGo.disabled = true; scanGo.textContent = 'Radar alınıyor…';
+    scanStatus.textContent = 'RainViewer radar verisi alınıyor…';
+    try {
+      const r = await fetch('/api/rainviewer');
+      const data = await r.json();
+      if (!r.ok) { scanStatus.textContent = 'Hata: ' + (data.error || 'bilinmeyen'); return; }
+      radarHost = data.host;
+      radarFrames = data.frames || [];
+      if (!radarFrames.length) { scanStatus.textContent = 'Radar frame bulunamadı.'; return; }
+      radarFrameSel.innerHTML = '';
+      radarFrames.forEach((f, i) => {
+        const opt = document.createElement('option');
+        opt.value = i;
+        const mins = Math.round((f.time - radarFrames[0].time) / 60);
+        opt.textContent = (f.nowcast ? '+' : (mins >= 0 ? '+' : '')) + mins + ' dk' +
+                          (f.nowcast ? ' (tahmin)' : '');
+        radarFrameSel.appendChild(opt);
+      });
+      radarFrameSel.value = String(radarFrames.length - 1 - (radarFrames.filter(x => x.nowcast).length));
+      // son gerçek (nowcast-olmayan) frame'i seç
+      let lastReal = radarFrames.length - 1;
+      while (lastReal >= 0 && radarFrames[lastReal].nowcast) lastReal--;
+      if (lastReal < 0) lastReal = radarFrames.length - 1;
+      radarFrameSel.value = String(lastReal);
+      showRadarFrame(lastReal);
+      // Alan seçilmişse oraya odaklan, değilse Kıbrıs civarına.
+      if (bbox) map.fitBounds([[bbox.south, bbox.west], [bbox.north, bbox.east]], {padding: [20, 20]});
+    } catch (e) { scanStatus.textContent = 'Radar isteği başarısız.'; }
+    finally { scanGo.disabled = false; scanGo.textContent = 'Radarı göster'; }
+  }
+
+  radarFrameSel.addEventListener('change', () => showRadarFrame(+radarFrameSel.value));
+
+  scanGo.addEventListener('click', async function () {
+    const src = byId(sourceSel.value);
+    if (src && src.mode === 'radar') { loadRadar(); return; }
+    if (!bbox) return;
+    const variable = document.getElementById('var-select').value;
+    const source = sourceSel.value;
+    const grid = parseInt(gridSel.value, 10);
+    scanGo.disabled = true; scanGo.textContent = 'Taranıyor…';
+    scanStatus.textContent = `${grid}×${grid} ızgara için veri alınıyor…`;
+    try {
+      const r = await fetch('/api/scan', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({bbox, source, variable, grid}),
+      });
+      const data = await r.json();
+      if (!r.ok) { scanStatus.textContent = 'Hata: ' + (data.error || 'bilinmeyen'); return; }
+      renderScan(data);
+      scanStatus.textContent = `Tamam — ${data.rows}×${data.cols} hücre tarandı.`;
+    } catch (e) { scanStatus.textContent = 'İstek başarısız.'; }
+    finally { scanGo.disabled = false; scanGo.textContent = 'Tara'; }
+  });
+
+  function renderScan(data) {
+    overlay.clearLayers();
+    const {min, max, cell_h, cell_w, cells, unit, label} = data;
+    const range = max - min || 1;
+    const opacity = parseFloat(document.getElementById('opacity-select').value);
+    cells.forEach(c => {
+      if (c.value === null || c.value === undefined) return;
+      const t = (c.value - min) / range;
+      const color = valColor(t);
+      const bounds = [
+        [c.lat - cell_h / 2, c.lon - cell_w / 2],
+        [c.lat + cell_h / 2, c.lon + cell_w / 2],
+      ];
+      L.rectangle(bounds, {color, weight: 0.5, fillColor: color,
+        fillOpacity: opacity, opacity: 0.5})
+        .bindPopup(`${label}<br><b>${c.value} ${unit || ''}</b><br><span class="muted small">${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}</span>`)
+        .addTo(overlay);
+    });
+
+    // Lejant.
+    const leg = document.getElementById('legend');
+    leg.classList.remove('hidden');
+    document.getElementById('leg-min').textContent = `${min} ${unit}`;
+    document.getElementById('leg-max').textContent = `${max} ${unit}`;
+    document.getElementById('leg-mid').textContent = `${((min + max) / 2).toFixed(2)} ${unit}`;
+    document.getElementById('leg-unit').textContent = `${label} — düşük (mavi) → yüksek (kırmızı)`;
+
+    // Kaynak notu.
+    const src = data.source;
+    const sEl = document.getElementById('scan-source');
+    if (src && src.resolution) {
+      sEl.innerHTML = `Veri: ${src.provider} · ${src.resolution}. ${src.cell_area || ''} ${src.caveat || ''}`;
+      sEl.classList.remove('hidden');
+    }
+  }
+})();
+</script>
+{% endblock %}
