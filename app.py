@@ -231,6 +231,11 @@ SCAN_VARIABLES: List[dict] = [
     {"key": "pressure_msl", "label": "Basınç", "section": "forecast", "unit": "hPa"},
     {"key": "cloud_cover", "label": "Bulutluluk", "section": "forecast", "unit": "%"},
     {"key": "elevation", "label": "Yükseklik (DEM)", "section": "elevation", "unit": "m"},
+    {"key": "daily_mean_temperature_2m", "label": "Günlük ortalama sıcaklık", "section": "climate", "unit": "°C"},
+    {"key": "daily_max_temperature_2m", "label": "Günlük maksimum sıcaklık", "section": "climate", "unit": "°C"},
+    {"key": "daily_precipitation", "label": "Günlük toplam yağış", "section": "climate", "unit": "mm"},
+    {"key": "surface_shortwave_radiation", "label": "Yüzey güneş radyasyonu", "section": "climate", "unit": "kWh/m²"},
+    {"key": "soil_moisture_surface", "label": "Yüzey toprak nemi", "section": "climate", "unit": "m³/m³"},
 ]
 
 
@@ -295,6 +300,14 @@ def _fetch_cells(src, variable, points):
     backend = (src or {}).get("backend", "openmeteo")
     if backend == "opentopodata":
         return _fetch_opentopodata(src.get("dataset"), points)
+    if backend == "weatherapi":
+        return _fetch_weatherapi(src.get("section"), variable, points)
+    if backend == "eris":
+        return _fetch_eris(variable, points)
+    if backend == "wttrin":
+        return _fetch_wttrin(variable, points)
+    if backend == "nasa_power":
+        return _fetch_nasa_power(variable, points)
     return _fetch_openmeteo(src.get("section"), src.get("model"), variable, points)
 
 
@@ -382,6 +395,200 @@ def _fetch_cell(src, variable, lat, lon):
     """Tek nokta yardımcı (karşılaştırma modu gibi tekil kullanımlar için)."""
     vals = _fetch_cells(src, variable, [(lat, lon)])
     return vals[0] if vals else None
+
+
+# ---------------------------------------------------------------------------
+# Yeni anahtarsız public API backend'leri (web aramasıyla bulundu)
+# ---------------------------------------------------------------------------
+
+def _fetch_weatherapi(section, variable, points):
+    """weather-api.site — forecast (/weather) veya air-quality (/air-quality).
+    Basit lat/lon JSON; bilinmeyen rate limit → 4 paralel işçi ile ılımlı."""
+    out: List[Optional[float]] = [None] * len(points)
+    endpoint = "air-quality" if section == "air_quality" else "weather"
+    field_map = {
+        "forecast": {
+            "temperature_2m": "temperature",
+            "apparent_temperature": "feels_like",
+            "relative_humidity_2m": "humidity",
+            "precipitation": "precipitation",
+            "wind_speed_10m": "wind_speed",
+            "pressure_msl": "pressure",
+            "cloud_cover": "cloud_cover",
+            "uv_index": "uv_index",
+        },
+        "air_quality": {
+            "pm2_5": "pm2_5",
+            "pm10": "pm10",
+            "nitrogen_dioxide": "nitrogen_dioxide",
+            "ozone": "ozone",
+            "sulphur_dioxide": "sulphur_dioxide",
+            "carbon_monoxide": "carbon_monoxide",
+            "us_aqi": "us_aqi",
+        },
+    }.get(section, {})
+    field = field_map.get(variable)
+    if not field:
+        return out
+
+    def fetch_one(i):
+        lat, lon = points[i]
+        try:
+            r = requests.get(
+                f"https://weather-api.site/{endpoint}",
+                params={"lat": round(lat, 4), "lon": round(lon, 4)},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json() or {}
+            val = data.get("current", {}).get(field)
+            if val is not None:
+                out[i] = float(val)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(fetch_one, range(len(points))))
+    return out
+
+
+def _fetch_eris(variable, points):
+    """Eris — anlık hava; OpenWeatherMap proxy."""
+    out: List[Optional[float]] = [None] * len(points)
+    field_map = {
+        "temperature_2m": ("main", "temp"),
+        "relative_humidity_2m": ("main", "humidity"),
+        "pressure_msl": ("main", "pressure"),
+        "wind_speed_10m": ("wind", "speed"),
+    }
+    mapping = field_map.get(variable)
+    if not mapping:
+        return out
+    sec, key = mapping
+
+    def fetch_one(i):
+        lat, lon = points[i]
+        try:
+            r = requests.get(
+                "https://weather-api.madadipouya.com/v1/weather/current",
+                params={"lat": round(lat, 4), "lon": round(lon, 4)},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json() or {}
+            val = data.get(sec, {}).get(key)
+            if val is not None:
+                out[i] = float(val)
+                # Eris/OpenWeatherMap rüzgârı m/s döner; bizim etiket km/s (aslında
+                # km/h) için çarp. Düzeltme: etiket birimi ileride km/h olmalı.
+                if variable == "wind_speed_10m":
+                    out[i] = out[i] * 3.6
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(fetch_one, range(len(points))))
+    return out
+
+
+def _fetch_wttrin(variable, points):
+    """wttr.in — JSON modu (?format=j1). Değerler genelde string; güvenli parse."""
+    out: List[Optional[float]] = [None] * len(points)
+    field_map = {
+        "temperature_2m": "temp_C",
+        "relative_humidity_2m": "humidity",
+        "pressure_msl": "pressure",
+        "wind_speed_10m": "windspeedKmph",
+        "uv_index": "uvIndex",
+    }
+    field = field_map.get(variable)
+    if not field:
+        return out
+
+    def _float(x):
+        try:
+            return float(x) if x not in (None, "", "-") else None
+        except Exception:
+            return None
+
+    def fetch_one(i):
+        lat, lon = points[i]
+        try:
+            r = requests.get(
+                f"https://wttr.in/{round(lat, 4)},{round(lon, 4)}",
+                params={"format": "j1"},
+                timeout=15,
+                headers={"User-Agent": "meteo/0.1.0 (github.com/niyoseris/meteo)"},
+            )
+            r.raise_for_status()
+            data = r.json() or {}
+            cc = data.get("current_condition") or [{}]
+            val = cc[0].get(field)
+            out[i] = _float(val)
+        except Exception:
+            pass
+
+    # wttr.in daha duyarlı; 2 işçi ile yavaş git.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        list(ex.map(fetch_one, range(len(points))))
+    return out
+
+
+def _fetch_nasa_power(variable, points):
+    """NASA POWER — günlük reanalysis. Son mevcut günü döndürür (genelde 1–30 gün
+    geride). Her nokta için ayrı istek; 4 paralel işçi."""
+    out: List[Optional[float]] = [None] * len(points)
+    param_map = {
+        "daily_mean_temperature_2m": "T2M",
+        "daily_max_temperature_2m": "T2M_MAX",
+        "daily_precipitation": "PRECTOT",
+        "surface_shortwave_radiation": "ALLSKY_SFC_SW_DWN",
+        "soil_moisture_surface": "GWETTOP",
+    }
+    param = param_map.get(variable)
+    if not param:
+        return out
+
+    from datetime import datetime, timedelta, timezone
+    # Reanalysis gecikmeli yayınlanır; son 30 günde geriye doğru ilk dolu değeri al.
+    end = datetime.now(timezone.utc) - timedelta(days=1)
+    start = end - timedelta(days=30)
+
+    def fetch_one(i):
+        lat, lon = points[i]
+        try:
+            r = requests.get(
+                "https://power.larc.nasa.gov/api/temporal/daily/point",
+                params={
+                    "parameters": param,
+                    "community": "RE",
+                    "longitude": round(lon, 4),
+                    "latitude": round(lat, 4),
+                    "start": start.strftime("%Y%m%d"),
+                    "end": end.strftime("%Y%m%d"),
+                    "format": "JSON",
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            data = r.json() or {}
+            param_block = data.get("properties", {}).get("parameter", {})
+            # API bazen istenen anahtarı takma adla döner (örn. PRECTOT → PRECTOTCORR).
+            series = param_block.get(param) or param_block.get(param + "CORR")
+            if not series:
+                return
+            # Son mevcut tarihi (null/-999 değil) al.
+            for date_key in sorted(series.keys(), reverse=True):
+                val = series[date_key]
+                if val is not None and val != -999.0:
+                    out[i] = float(val)
+                    return
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(fetch_one, range(len(points))))
+    return out
 
 
 # ---------------------------------------------------------------------------

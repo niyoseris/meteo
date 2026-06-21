@@ -118,12 +118,14 @@
     air_quality: 'Hava kalitesi (partikül · UV · AQ)',
     forecast: 'Hava tahmini',
     elevation: 'Yükseklik',
+    climate: 'İklim / enerji (NASA POWER)',
   };
-  const SECTION_ORDER = ['air_quality', 'forecast', 'elevation'];
+  const SECTION_ORDER = ['air_quality', 'forecast', 'elevation', 'climate'];
   // Bir bölüm için "en anlaşılır" varsayılan değişken — kaynak değişince
-  // değişken buradan seçilir (SO₂ değil PM2.5, sıcaklık, yükseklik).
+  // değişken buradan seçilir (SO₂ değil PM2.5, sıcaklık, yükseklik, güneş radyasyonu).
   const SECTION_DEFAULT_VAR = {
     air_quality: 'pm2_5', forecast: 'temperature_2m', elevation: 'elevation',
+    climate: 'surface_shortwave_radiation',
   };
   function buildVarSelect() {
     varSel.innerHTML = '';

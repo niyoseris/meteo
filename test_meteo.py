@@ -526,6 +526,121 @@ def test_scan_opentopodata_backend(monkeypatch):
     assert data["source"]["backend"] == "opentopodata"
 
 
+def test_scan_weatherapi_forecast_backend(monkeypatch):
+    """weather-api.site forecast backend'i requests.get ile."""
+    import app as appmod
+    captured = {}
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["url"] = url
+        assert "weather-api.site" in url
+        return _FakeResp({
+            "latitude": params["lat"], "longitude": params["lon"],
+            "current": {"temperature": 22.5, "humidity": 55, "wind_speed": 10,
+                        "pressure": 1012, "cloud_cover": 20, "uv_index": 5.0,
+                        "precipitation": 0.0, "feels_like": 23.0},
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                  "source": "weatherapi_forecast", "variable": "temperature_2m", "grid": 3})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["variable"] == "temperature_2m"
+    assert data["source"]["backend"] == "weatherapi"
+    assert data["source"]["via"] == "weather-api.site"
+    assert all(cell["value"] == 22.5 for cell in data["cells"])
+
+
+def test_scan_weatherapi_aq_backend(monkeypatch):
+    """weather-api.site air-quality backend'i PM2.5 ile."""
+    import app as appmod
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        assert "air-quality" in url
+        return _FakeResp({
+            "latitude": params["lat"], "longitude": params["lon"],
+            "current": {"pm2_5": 12.3, "pm10": 18.0, "us_aqi": 42,
+                        "nitrogen_dioxide": 8, "ozone": 35, "sulphur_dioxide": 2, "carbon_monoxide": 0.3},
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                  "source": "weatherapi_aq", "variable": "pm2_5", "grid": 3})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["source"]["section"] == "air_quality"
+    assert all(cell["value"] == 12.3 for cell in data["cells"])
+
+
+def test_scan_eris_backend(monkeypatch):
+    """Eris anlık hava backend'i — OpenWeatherMap proxy."""
+    import app as appmod
+    captured = {}
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["url"] = url
+        return _FakeResp({
+            "main": {"temp": 20.0, "humidity": 60, "pressure": 1015},
+            "wind": {"speed": 3.0},
+            "weather": [{"main": "Clear"}],
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                  "source": "eris_current", "variable": "wind_speed_10m", "grid": 3})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["source"]["backend"] == "eris"
+    # Eris rüzgâr m/s döner, km/h çevrimi uygulanır: 3.0 * 3.6 = 10.8
+    assert all(abs(cell["value"] - 10.8) < 0.01 for cell in data["cells"])
+
+
+def test_scan_wttrin_backend(monkeypatch):
+    """wttr.in JSON backend'i — değerler string; parse testi."""
+    import app as appmod
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        assert "wttr.in" in url
+        assert params.get("format") == "j1"
+        return _FakeResp({
+            "current_condition": [{
+                "temp_C": "24", "humidity": "45", "pressure": "1011",
+                "windspeedKmph": "12", "uvIndex": "6",
+            }],
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                  "source": "wttrin_current", "variable": "temperature_2m", "grid": 3})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["source"]["backend"] == "wttrin"
+    assert all(cell["value"] == 24.0 for cell in data["cells"])
+
+
+def test_scan_nasa_power_backend(monkeypatch):
+    """NASA POWER günlük iklim backend'i — dün ortalaması."""
+    import app as appmod
+    captured = {}
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["param"] = params.get("parameters")
+        return _FakeResp({
+            "type": "Feature",
+            "properties": {
+                "parameter": {
+                    "ALLSKY_SFC_SW_DWN": {"20230101": 2.5, "20230102": 3.1},
+                },
+            },
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                  "source": "nasa_power_daily", "variable": "surface_shortwave_radiation", "grid": 3})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["source"]["backend"] == "nasa_power"
+    assert data["source"]["section"] == "climate"
+    assert captured["param"] == "ALLSKY_SFC_SW_DWN"
+    assert all(cell["value"] == 3.1 for cell in data["cells"])
+
+
 def test_scan_radar_mode_rejected():
     """RainViewer radar modu /api/scan'dan sayısal tarama vermez."""
     import app as appmod
@@ -574,6 +689,14 @@ def test_datasources_catalog():
     assert datasources.get("opentopo_srtm90m")["dataset"] == "srtm90m"
     assert datasources.get("rainviewer")["mode"] == "radar"
     assert datasources.get("rainviewer")["backend"] == "rainviewer"
+    # Web aramasıyla bulunan yeni anahtarsız kaynaklar
+    for sid in ["weatherapi_forecast", "weatherapi_aq", "eris_current", "wttrin_current", "nasa_power_daily"]:
+        s = datasources.get(sid)
+        assert s and s["status"] == "integrated" and s["backend"] and s["via"]
+        assert datasources.variables_for(sid)
+    assert datasources.get("nasa_power_daily")["section"] == "climate"
+    # CERNS.IO lat/lon locate ucu çalışmadığı için external bilgi kaynağı
+    assert datasources.get("cernsio_aqi")["status"] == "external"
     # external kaynakların taranabilir değişkeni yok
     for sid in ["openaq", "tropomi", "radar"]:
         assert datasources.get(sid)["status"] == "external"
@@ -612,6 +735,9 @@ def test_scan_page_variable_catalog_covers_particles_uv():
     # hava kalitesi değişkenleri en üstte (en az bir AQ değişkeni forecast'ten önce)
     first_section = catalog[0]["section"]
     assert first_section == "air_quality"
+    # iklim/enerji değişkenleri de katalogda (NASA POWER)
+    for k in ["surface_shortwave_radiation", "soil_moisture_surface", "daily_mean_temperature_2m"]:
+        assert k in keys, f"{k} katalogda yok"
     # varsayılan değişken nötr bir tahmin değişkenidir (Sıcaklık) — böylece
     # açılışta tahmin modelleri (DWD ICON/GFS/ECMWF) seçilebilir kalır; PM2.5
     # seçilince kaynak otomatik CAMS'e döner (JS applyVariable ile).

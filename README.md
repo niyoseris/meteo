@@ -101,11 +101,25 @@ olmayan veriyi önler).
 
 **Diğer anahtarsız kaynaklar** (web aramasıyla bulundu, Open-Meteo dışı):
 
-| Kaynak | Sağlayıcı | Çözünürlük | Mod |
+| Kaynak | Sağlayıcı | Çözünürlük | Mod | Not |
+| --- | --- | --- | --- | --- |
+| `opentopo_srtm30m` | OpenTopoData (SRTM v3) | ~30 m (gerçek arazi) | sayısal ızgara | 1 istek/sn, 1000/gün |
+| `opentopo_srtm90m` | OpenTopoData (SRTM v3) | ~90 m (gerçek arazi) | sayısal ızgara | 1 istek/sn, 1000/gün |
+| `rainviewer` | RainViewer (kamu radarı) | ~1–2 km (gerçek yağış) | radar tile katmanı | `/api/rainviewer` |
+| `weatherapi_forecast` | weather-api.site | ~9–25 km tahmin | sayısal ızgara | keyless, anlık + tahmin |
+| `weatherapi_aq` | weather-api.site | ~20 km AQ tahmini | sayısal ızgara | PM/AQ/UV keyless |
+| `eris_current` | Eris (OpenWeatherMap proxy) | ~9–25 km | sayısal ızgara | yalnızca anlık hava |
+| `wttrin_current` | wttr.in (JSON) | ~9–25 km | sayısal ızgara | `?format=j1`, keyless |
+
+**İklim / enerji (anahtarsız, günlük ortalama)**:
+
+| Kaynak | Sağlayıcı | Çözünürlük | Değişkenler |
 | --- | --- | --- | --- |
-| `opentopo_srtm30m` | OpenTopoData (SRTM v3) | ~30 m (gerçek arazi) | sayısal ızgara |
-| `opentopo_srtm90m` | OpenTopoData (SRTM v3) | ~90 m (gerçek arazi) | sayısal ızgara |
-| `rainviewer` | RainViewer (kamu radarı) | ~1–2 km (gerçek yağış) | radar tile katmanı |
+| `nasa_power_daily` | NASA POWER | ~56 km reanalysis | günlük ort/max sıcaklık, yağış, güneş radyasyonu, yüzey toprak nemi |
+
+> NASA POWER verileri **dün veya daha gerideki günün ortalamasıdır**; anlık değil,
+> ~0.5° reanalysis ızgarasındır. Uygulama son 30 günde geriye doğru ilk dolu
+> değeri otomatik seçer.
 
 Hücreler Open-Meteo'nun virgülle ayrılmış çoklu koordinat desteğiyle **batch**
 çekilir (tek istekte 100 nokta) → ince ızgaralar saniyeler içinde. DEM gibi
@@ -115,12 +129,12 @@ için batch'leri **sıralı** çeker (ince ızgarada yavaştır). RainViewer rad
 kaynağı sayısal ızgara vermez; haritada gerçek zamanlı yağış radarı **tile
 katmanı** olarak gösterilir (geçmiş frame'ler + nowcast; `/api/rainviewer`).
 
-`openaq` / `tropomi` / `radar` alternatif kaynakları katalogda **bilgi
-amaçlı** görünür (gerçek/ince veri sunarlar ama anahtar/entegrasyon gerekir);
-tarama için seçilemezler. Web aramasında bulunan ama mimariye uymayan diğer
-anahtarsız kaynaklar: **EEA Air Quality** (anahtarsız ama Parquet dosya
-indirme — nokta sorgu değil), **NOAA/NWS api.weather.gov** (anahtarsız ama
-yalnız ABD).
+`openaq` / `tropomi` / `radar` / `cernsio_aqi` alternatif kaynakları katalogda
+**bilgi amaçlı** görünür (gerçek/ince veri sunarlar ama anahtar/entegrasyon
+veya şehir bazlı sorgu nedeniyle lat/lon taramasına uymaz); tarama için
+seçilemezler. Web aramasında bulunan ama mimariye uymayan diğer anahtarsız
+kaynaklar: **EEA Air Quality** (anahtarsız ama Parquet dosya indirme — nokta
+sorgu değil), **NOAA/NWS api.weather.gov** (anahtarsız ama yalnız ABD).
 
 ## Komut satırı
 

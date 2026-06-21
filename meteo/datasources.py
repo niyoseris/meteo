@@ -40,6 +40,11 @@ SECTION_VARS: Dict[str, List[str]] = {
         "carbon_monoxide", "ammonia", "dust", "us_aqi", "european_aqi", "uv_index",
     ],
     "elevation": ["elevation"],
+    "climate": [
+        "daily_mean_temperature_2m", "daily_max_temperature_2m",
+        "daily_precipitation", "surface_shortwave_radiation",
+        "soil_moisture_surface",
+    ],
 }
 
 
@@ -249,6 +254,121 @@ DATA_SOURCES: Dict[str, dict] = {
             coverage="Küresel (radar istasyonu olan bölgeler)",
             update_freq="10 dk (son ~2 saat geçmiş + nowcast)",
             caveat="Tile tabanlı görsel; sayısal tarama/maske üretmez. Radar olmayan bölgeler boş. Anahtarsız, kişisel/ eğitim kullanımı.",
+        ),
+    },
+
+    # ----- Web aramasıyla bulunan yeni anahtarsız public API kaynakları -----
+    # weather-api.site — keyless hava tahmini / anlık hava JSON API'si.
+    "weatherapi_forecast": {
+        "id": "weatherapi_forecast",
+        "label": "weather-api.site (anlık tahmin)",
+        "section": "forecast", "model": None,
+        "min_cell_deg": 0.09,  # ~10 km; gerçek çözünürlüğü belirsiz, güvenli tavan
+        **_row(
+            provider="weather-api.site",
+            kind_label="Anahtarsız hava tahmin API'si",
+            backend="weatherapi", via="weather-api.site", mode="grid",
+            measures="Sıcaklık, hissedilen sıcaklık, nem, yağış, rüzgâr, basınç, bulutluluk, UV.",
+            resolution="~9–25 km tahmin ızgarası (tahmini)",
+            cell_area="Her değer tahmin modelinin ızgara hücresi ortalamasıdır; nokta ölçümü değil.",
+            coverage="Küresel",
+            update_freq="Saatlik tahmin, anlık mevcut",
+            caveat="Ücretsiz public API; rate limit açıklanmamış. Aşırı kullanımda kısıtlanabilir.",
+        ),
+    },
+    "weatherapi_aq": {
+        "id": "weatherapi_aq",
+        "label": "weather-api.site (hava kalitesi)",
+        "section": "air_quality", "model": None,
+        "min_cell_deg": 0.18,  # ~20 km; model tabanlı AQ tahmini
+        **_row(
+            provider="weather-api.site",
+            kind_label="Anahtarsız hava kalitesi API'si",
+            backend="weatherapi", via="weather-api.site", mode="grid",
+            measures="PM2.5, PM10, NO₂, SO₂, CO, ozon, ABD AQI.",
+            resolution="~20 km tahmini AQ ızgarası",
+            cell_area="Her değer model tabanlı hava kalitesi tahmininin ızgara ortalamasıdır; istasyon ölçümü değil.",
+            coverage="Küresel",
+            update_freq="Saatlik",
+            caveat="AQ değerleri model tahminidir; yerel sensör ölçümlerinden farklı olabilir. Rate limit açıklanmamış.",
+        ),
+    },
+
+    # Eris — keyless anlık hava API'si (OpenWeatherMap üzerinden açık proxy).
+    "eris_current": {
+        "id": "eris_current",
+        "label": "Eris (anlık hava)",
+        "section": "forecast", "model": None,
+        "min_cell_deg": 0.09,
+        **_row(
+            provider="Eris (weather-api.madadipouya.com)",
+            kind_label="Anahtarsız anlık hava API'si",
+            backend="eris", via="Eris", mode="grid",
+            measures="Sıcaklık, nem, basınç, rüzgâr, hava durumu açıklaması.",
+            resolution="~9–25 km (OpenWeatherMap istasyon/model karışımı)",
+            cell_area="Her değer istasyon/veri kaynağı karışımının nokta yaklaşıklamasıdır; yerel istasyon olmayan yerlerde model değeri olabilir.",
+            coverage="Küresel",
+            update_freq="Anlık/10 dk",
+            caveat="Public instance 'no limits' diyor ama bağımsız proxydir; üretimde kendi kendine host edilebilir. Sadece anlık veri, tahmin/forecast yok.",
+        ),
+    },
+
+    # wttr.in — terminal dostu, JSON çıkışlı keyless hava API'si.
+    "wttrin_current": {
+        "id": "wttrin_current",
+        "label": "wttr.in (anlık hava)",
+        "section": "forecast", "model": None,
+        "min_cell_deg": 0.09,
+        **_row(
+            provider="wttr.in (WorldWeatherOnline verisi)",
+            kind_label="Anahtarsız anlık hava API'si",
+            backend="wttrin", via="wttr.in", mode="grid",
+            measures="Sıcaklık, nem, basınç, rüzgâr, görünürlük, UV.",
+            resolution="~9–25 km (WorldWeatherOnline ızgara)",
+            cell_area="Her değer WorldWeatherOnline ızgara/istasyon karışımının nokta yaklaşıklamasıdır.",
+            coverage="Küresel",
+            update_freq="Saatlik",
+            caveat="?format=j1 JSON endpoint'i gayri resmi/desteklenmez sayılabilir; ana site metin/ANSI odaklıdır. Aşırı kullanımda IP engeli olabilir.",
+        ),
+    },
+
+    # CERNS.IO — keyless şehir bazlı hava kalitesi API'si. API dokümanında
+    # /locate (lat/lon → slug) ucu gösteriliyordu ancak canlı testte 404 dönüyor;
+    # sadece bilinen şehir slug'larıyla çalışıyor. Bu yüzden lat/lon taramasına
+    # uymadığı için external (bilgi) olarak bırakılıyor.
+    "cernsio_aqi": {
+        "id": "cernsio_aqi",
+        "label": "CERNS.IO (şehir AQI) — bilgi",
+        "section": None, "model": None, "min_cell_deg": None,
+        **_row(
+            provider="CERNS.IO",
+            kind_label="Anahtarsız şehir bazlı hava kalitesi API'si",
+            status="external", backend=None, via="CERNS.IO",
+            measures="PM2.5, PM10, ABD AQI, UV indeksi.",
+            resolution="Şehir merkezi (~33.000 şehir)",
+            cell_area="Her değer seçilen şehrin istasyon/model karışımı ortalamasıdır; ızgara tarama yapmaz.",
+            coverage="33.000+ şehir, 108+ ülke",
+            update_freq="~30 dk",
+            caveat="Şehir slug'ıyla çalışır; lat/lon'dan otomatik şehir bulma (/locate) canlıda 404. Entegrasyon için şehir adı/arama arayüzü gerekir. Rate limit 60 istek/dk/IP.",
+        ),
+    },
+
+    # NASA POWER — keyless günlük iklim/enerji verisi (dün ortalaması).
+    "nasa_power_daily": {
+        "id": "nasa_power_daily",
+        "label": "NASA POWER (günlük iklim/enerji)",
+        "section": "climate", "model": None,
+        "min_cell_deg": 0.05,  # ~5.6 km (0.5° reanalysis ~56 km aslında; güvenli tavan)
+        **_row(
+            provider="NASA POWER (NASA Langley Research Center)",
+            kind_label="Anahtarsız günlük iklim/enerji verisi",
+            backend="nasa_power", via="NASA POWER", mode="grid",
+            measures="Günlük ortalama sıcaklık, günlük maksimum sıcaklık, günlük toplam yağış, güneş radyasyonu (kısa dalga), yüzey toprak nemi.",
+            resolution="0.5° reanalysis (~56 km); güneş radyasyonu gibi parametreler daha kaba",
+            cell_area="Her değer ~56 km'lik bir reanalysis ızgara hücresinin günlük ortalamasıdır; anlık değil, dünün ortalamasıdır.",
+            coverage="Küresel (kara/deniz), 1981–dün",
+            update_freq="Günlük (bir gecikmeli)",
+            caveat="Veri dünün ortalamasıdır; anlık/bugün tahmini değildir. Reanalysis ızgarası kabaca 0.5° (~56 km); yerel detay çok düşük.",
         ),
     },
 
