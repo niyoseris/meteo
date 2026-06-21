@@ -293,13 +293,21 @@
   const selInfo = document.getElementById('sel-info');
   const scanStatus = document.getElementById('scan-status');
 
-  // Sayfa açılışında: değişken katalogunu kur, varsayılan değişkeni seç.
-  // Varsayılan nötr bir tahmin değişkeni (Sıcaklık) → açılışta tahmin modelleri
-  // de CAMS de seçilebilir. Partiküller açılır listede en üstte görünür.
-  buildVarSelect();
-  varSel.value = window.SCAN_DEFAULTS && window.SCAN_DEFAULTS.variable || 'temperature_2m';
-  if (!varSel.value) varSel.value = varSel.options[0] && varSel.options[0].value;
+  // Sayfa açılışında: önce seçili kaynağı uygula (değişken listesini
+  // doldur), sonra o kaynağın sunduğu değişkenlerden mantıklı bir
+  // varsayılan seç. Eski sırada buildVarSelect() önce çağrılınca select
+  // boş placeholder'la kalıyordu.
   applySource(sourceSel.value);
+  const initialSrc = byId(sourceSel.value);
+  let preferred = window.SCAN_DEFAULTS && window.SCAN_DEFAULTS.variable;
+  if (initialSrc && initialSrc.status === 'integrated' && initialSrc.mode === 'grid') {
+    preferred = defaultVarForSource(initialSrc);
+  }
+  if (preferred && [...varSel.options].some(o => o.value === preferred)) {
+    varSel.value = preferred;
+  } else if (varSel.options[0]) {
+    varSel.value = varSel.options[0].value;
+  }
 
   // RdYlBu ters skalası: 0=mavi(soğuk/düşük) → 1=kırmızı(sıcak/yüksek)
   const STOPS = [

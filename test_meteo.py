@@ -845,3 +845,28 @@ def test_scan_page_variable_catalog_covers_particles_uv():
     # açılışta tahmin modelleri (DWD ICON/GFS/ECMWF) seçilebilir kalır; PM2.5
     # seçilince kaynak otomatik CAMS'e döner (JS applyVariable ile).
     assert '"temperature_2m"' in body.split("SCAN_DEFAULTS")[1][:80]
+
+
+def test_scan_page_sources_include_variables():
+    """/scan şablonuna gönderilen her entegre grid kaynağının variables
+    listesi dolu olmalı; aksi halde JS buildVarSelect boş placeholder bırakır."""
+    import app as appmod, json
+    from meteo import datasources
+    c = appmod.app.test_client()
+    r = c.get("/scan")
+    assert r.status_code == 200
+    body = r.data.decode()
+    m = body.split("window.SCAN_SOURCES = ", 1)[1].split(";</script>", 1)[0]
+    sources = json.loads(m)
+    by_id = {s["id"]: s for s in sources}
+    for sid in datasources.DATA_SOURCES:
+        meta = datasources.get(sid)
+        if meta["status"] != "integrated" or meta.get("mode", "grid") != "grid":
+            continue
+        src = by_id[sid]
+        assert src.get("variables"), f"{sid} grid kaynağı variables listesi boş"
+        keys = {v["key"] for v in src["variables"]}
+        expected = set(datasources.variables_for(sid))
+        assert keys == expected, f"{sid}: variables uyuşmuyor {keys} vs {expected}"
+    # Açılış kaynağı (forecast_best) sıcaklık değişkeni içermeli
+    assert "temperature_2m" in {v["key"] for v in by_id["forecast_best"]["variables"]}
