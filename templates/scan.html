@@ -111,30 +111,40 @@
       (src.caveat ? `<div class="si-caveat">${esc(src.caveat)}</div>` : '') + banner;
   }
 
-  // Değişken listesi TÜM katalogdan kurulur (kaynaktan değil) — partiküller,
-  // UV, AQI her zaman görünür. Bölüm bazında optgroup'lanır; hava kalitesi
-  // en üstte, böylece "yok" sanılan değişkenler hemen görünür hâle gelir.
+  // Değişken listesi artık SEÇİLİ KAYNAĞIN sunduğu değişkenlerle sınırlı.
+  // Böylece kullanıcı bir kaynak seçince yalnızca onun ölçtüğü veriler
+  // listelenir; boş/ölçülemeyen seçenek kalmaz.
   const SECTION_LABELS = {
     air_quality: 'Hava kalitesi (partikül · UV · AQ)',
     forecast: 'Hava tahmini',
     elevation: 'Yükseklik',
     climate: 'İklim / enerji (NASA POWER)',
   };
-  const SECTION_ORDER = ['air_quality', 'forecast', 'elevation', 'climate'];
   // Bir bölüm için "en anlaşılır" varsayılan değişken — kaynak değişince
   // değişken buradan seçilir (SO₂ değil PM2.5, sıcaklık, yükseklik, güneş radyasyonu).
   const SECTION_DEFAULT_VAR = {
     air_quality: 'pm2_5', forecast: 'temperature_2m', elevation: 'elevation',
     climate: 'surface_shortwave_radiation',
   };
-  function buildVarSelect() {
+  function buildVarSelect(src) {
     varSel.innerHTML = '';
-    SECTION_ORDER.forEach(sec => {
-      const vars = VAR_CATALOG.filter(v => v.section === sec);
-      if (!vars.length) return;
+    const vars = (src && src.variables) || [];
+    if (!vars.length) {
+      const o = document.createElement('option');
+      o.value = ''; o.textContent = '— (bu kaynak sayısal değişken sunmaz)';
+      varSel.appendChild(o);
+      varSel.disabled = true;
+      return;
+    }
+    varSel.disabled = false;
+    // Kaynağın değişkenlerini bölüm gruplarına ayır.
+    const sections = [...new Set(vars.map(v => v.section).filter(Boolean))];
+    sections.forEach(sec => {
+      const secVars = vars.filter(v => v.section === sec);
+      if (!secVars.length) return;
       const og = document.createElement('optgroup');
       og.label = SECTION_LABELS[sec] || sec;
-      vars.forEach(v => {
+      secVars.forEach(v => {
         const o = document.createElement('option');
         o.value = v.key;
         o.textContent = v.label + (v.unit ? ` (${v.unit})` : '');
@@ -158,28 +168,6 @@
     return src.variables && src.variables[0] ? src.variables[0].key : varSel.value;
   }
 
-  // İki denetim de her zaman tam seçilebilir; uyumsuzlukta DİĞER denetim
-  // otomatik eşitlenir (kimse gri/devre dışı kalmaz):
-  //  - değişken değişince, seçili kaynak ölçmüyorsa en ince uyumlu kaynağa geç.
-  //  - kaynak değişince, yeni kaynak seçili değişkeni ölçmüyorsa değişkeni
-  //    o kaynağın varsayılanına çevir.
-  function onVarChange(key) {
-    const cur = byId(sourceSel.value);
-    if (cur && cur.status === 'integrated' && cur.mode !== 'radar' && !measuresVar(cur, key)) {
-      const best = compatibleSources(key)[0];
-      if (best) sourceSel.value = best.id;
-    }
-    applySource(sourceSel.value);
-  }
-
-  function onSourceChange(id) {
-    const src = byId(id);
-    applySource(id);
-    if (src && src.status === 'integrated' && src.mode !== 'radar' &&
-        !measuresVar(src, varSel.value)) {
-      varSel.value = defaultVarForSource(src);  // programatik → change tetiklenmez
-    }
-  }
 
   const GRID_BASE = [4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 56, 64];
   const gridReadout = document.getElementById('grid-readout');
@@ -229,16 +217,17 @@
   function applySource(id) {
     const src = byId(id);
     renderSourceInfo(src);
-    const radar = src.mode === 'radar';
-    // Radar modu: sayısal ızgara/değişken yok; değişken/ızgara UI gizlenir,
-    // frame seçici gösterilir.
-    radarFrameLabel.classList.toggle('hidden', !(radar && src.status === 'integrated'));
-    varLabel.classList.toggle('hidden', radar);
-    gridLabel.classList.toggle('hidden', radar);
-    if (radar) {
-      // radar küresel olduğu için bbox gerekmez.
+    // Değişken listesini SEÇİLİ KAYNAĞIN sunduklarıyla sınırla.
+    buildVarSelect(src);
+    const visualMode = src.mode !== 'grid';  // radar/points/image/embed
+    // Görsel/overlay modlar: sayısal ızgara/değişken yok; frame seçici
+    // (radar için) veya buton overlay işlevine döner.
+    radarFrameLabel.classList.toggle('hidden', !(src.mode === 'radar' && src.status === 'integrated'));
+    varLabel.classList.toggle('hidden', visualMode);
+    gridLabel.classList.toggle('hidden', visualMode);
+    if (visualMode) {
       scanGo.disabled = false;
-      scanGo.textContent = 'Radarı göster';
+      scanGo.textContent = modeButtonText(src);
       gridSel.disabled = true;
     } else {
       scanGo.textContent = 'Tara';
@@ -250,6 +239,32 @@
         scanGo.disabled = !bbox;  // alan seçilmişse aktif, değilse pasif
       }
     }
+  }
+
+  function modeButtonText(src) {
+    if (src.mode === 'radar') return 'Radarı göster';
+    if (src.mode === 'points') return 'Noktaları göster';
+    if (src.mode === 'image') return 'Görüntüyü göster';
+    if (src.mode === 'embed') return 'Haritada göster';
+    return 'Göster';
+  }
+
+  // Kaynak değişince: değişken listesi zaten applySource içinde daraltıldı.
+  // Burada yalnızca yeni kaynağın sunduğu değişkenlerden mantıklı bir varsayılan seç.
+  function onSourceChange(id) {
+    const src = byId(id);
+    applySource(id);
+    if (src && src.status === 'integrated' && src.mode === 'grid') {
+      const preferred = defaultVarForSource(src);
+      if (preferred) varSel.value = preferred;
+    }
+  }
+
+  // Değişken değişince yalnızca ızgara seçeneklerini yenile (değişkenin
+  // birimi/büyüklüğü değişebilir ama kaynak zaten uyumlu).
+  function onVarChange(key) {
+    updateGridOptions();
+    updateGridReadout();
   }
 
   sourceSel.addEventListener('change', () => onSourceChange(sourceSel.value));
@@ -270,6 +285,7 @@
   let radarLayer = null;       // RainViewer tile katmanı
   let radarFrames = [];        // [{time,path,nowcast}]
   let radarHost = '';
+  let satelliteLayer = null;   // EUMETSAT image overlay
 
   const drawBtn = document.getElementById('draw-btn');
   const clearBtn = document.getElementById('clear-btn');
@@ -356,16 +372,18 @@
     resetSelection();
     overlay.clearLayers();
     removeRadar();
+    removeSatellite();
     document.getElementById('legend').classList.add('hidden');
     document.getElementById('scan-source').classList.add('hidden');
     scanStatus.textContent = '';
   });
 
-  // Opaklık kaydırıcısı — mevcut maskeleri (ve radar katmanını) canlı günceller.
+  // Opaklık kaydırıcısı — mevcut maskeleri, radar ve uydu katmanlarını canlı günceller.
   document.getElementById('opacity-select').addEventListener('input', function () {
     const op = parseFloat(this.value);
     overlay.eachLayer(l => l.setStyle && l.setStyle({fillOpacity: op}));
     if (radarLayer) radarLayer.setOpacity(op);
+    if (satelliteLayer) satelliteLayer.setOpacity(op);
   });
 
   // --- RainViewer radar görsel katmanı (anahtarsız) ---
@@ -373,6 +391,10 @@
     if (radarLayer) { map.removeLayer(radarLayer); radarLayer = null; }
     radarFrames = [];
     radarFrameSel.innerHTML = '';
+  }
+
+  function removeSatellite() {
+    if (satelliteLayer) { map.removeLayer(satelliteLayer); satelliteLayer = null; }
   }
 
   function radarTileUrl(frame) {
@@ -393,6 +415,7 @@
   }
 
   async function loadRadar() {
+    removeSatellite();
     scanGo.disabled = true; scanGo.textContent = 'Radar alınıyor…';
     scanStatus.textContent = 'RainViewer radar verisi alınıyor…';
     try {
@@ -426,9 +449,111 @@
 
   radarFrameSel.addEventListener('change', () => showRadarFrame(+radarFrameSel.value));
 
+  // --- USGS deprem nokta katmanı (anahtarsız) ---
+  function eqColor(depth) {
+    // Derinlik: sığ=yeşil, orta=sarı, derin=kırmızı
+    if (depth === null || depth === undefined) return '#888';
+    if (depth < 10) return '#16a34a';
+    if (depth < 50) return '#facc15';
+    if (depth < 100) return '#f97316';
+    return '#dc2626';
+  }
+
+  async function loadEarthquakes() {
+    overlay.clearLayers();
+    removeRadar();
+    removeSatellite();
+    scanGo.disabled = true; scanGo.textContent = 'Depremler alınıyor…';
+    scanStatus.textContent = 'USGS deprem verisi alınıyor…';
+    try {
+      const params = new URLSearchParams();
+      if (bbox) {
+        params.set('minlat', bbox.south);
+        params.set('maxlat', bbox.north);
+        params.set('minlon', bbox.west);
+        params.set('maxlon', bbox.east);
+      } else {
+        // Varsayılan Kıbrıs çevresi
+        params.set('minlat', 34.0);
+        params.set('maxlat', 36.5);
+        params.set('minlon', 32.0);
+        params.set('maxlon', 35.5);
+      }
+      params.set('minmag', '2.0');
+      params.set('hours', '24');
+      const r = await fetch('/api/earthquakes?' + params.toString());
+      const data = await r.json();
+      if (!r.ok) { scanStatus.textContent = 'Hata: ' + (data.error || 'bilinmeyen'); return; }
+      renderEarthquakes(data.features || []);
+      scanStatus.textContent = `${data.count} deprem gösteriliyor.`;
+    } catch (e) { scanStatus.textContent = 'Deprem isteği başarısız.'; }
+    finally { scanGo.disabled = false; scanGo.textContent = 'Noktaları göster'; }
+  }
+
+  function renderEarthquakes(features) {
+    overlay.clearLayers();
+    document.getElementById('legend').classList.add('hidden');
+    document.getElementById('scan-source').classList.remove('hidden');
+    const src = byId(sourceSel.value);
+    if (src) {
+      document.getElementById('scan-source').innerHTML =
+        `Veri: ${src.provider} · ${src.resolution}. ${src.cell_area || ''}`;
+    }
+    features.forEach(f => {
+      const [lon, lat, depth] = f.geometry.coordinates || [0, 0, null];
+      const mag = f.properties.mag || 0;
+      const radius = Math.max(4, Math.min(24, 2 + mag * 2.5));
+      const marker = L.circleMarker([lat, lon], {
+        radius, color: eqColor(depth), weight: 1,
+        fillColor: eqColor(depth), fillOpacity: 0.7,
+      }).addTo(overlay);
+      const timeStr = f.properties.time ? new Date(f.properties.time).toLocaleString('tr-TR') : '—';
+      marker.bindPopup(
+        `<b>M${mag.toFixed(1)}</b> · ${depth !== null ? depth.toFixed(1) + ' km derinlik' : 'derinlik bilinmiyor'}<br>` +
+        `${esc(f.properties.place || '')}<br><span class="muted small">${timeStr}</span>`
+      );
+    });
+    if (bbox) map.fitBounds([[bbox.south, bbox.west], [bbox.north, bbox.east]], {padding: [20, 20]});
+  }
+
+  // --- EUMETSAT uydu image overlay (anahtarsız) ---
+  async function loadSatellite() {
+    overlay.clearLayers();
+    removeRadar();
+    removeSatellite();
+    scanGo.disabled = true; scanGo.textContent = 'Uydu alınıyor…';
+    scanStatus.textContent = 'EUMETSAT uydu görüntüsü alınıyor…';
+    try {
+      const r = await fetch('/api/satellite?product=natural');
+      const data = await r.json();
+      if (!r.ok) { scanStatus.textContent = 'Hata: ' + (data.error || 'bilinmeyen'); return; }
+      const op = parseFloat(document.getElementById('opacity-select').value);
+      satelliteLayer = L.imageOverlay(data.url, data.bounds, {
+        opacity: op, attribution: data.attribution,
+      }).addTo(map);
+      scanStatus.textContent = data.coverage + ' · ' + data.note;
+      document.getElementById('scan-source').classList.remove('hidden');
+      document.getElementById('scan-source').textContent =
+        `Veri: ${data.attribution} · ${data.coverage}. ${data.note}`;
+      map.fitBounds(data.bounds, {padding: [20, 20]});
+    } catch (e) { scanStatus.textContent = 'Uydu isteği başarısız.'; }
+    finally { scanGo.disabled = false; scanGo.textContent = 'Görüntüyü göster'; }
+  }
+
+  // --- Embed overlay stub (henüz doldurulmadı) ---
+  async function loadEmbed() {
+    overlay.clearLayers();
+    removeRadar();
+    removeSatellite();
+    scanStatus.textContent = 'Embed görünüm entegrasyonu hazırlanıyor.';
+  }
+
   scanGo.addEventListener('click', async function () {
     const src = byId(sourceSel.value);
     if (src && src.mode === 'radar') { loadRadar(); return; }
+    if (src && src.mode === 'points') { loadEarthquakes(); return; }
+    if (src && src.mode === 'image') { loadSatellite(); return; }
+    if (src && src.mode === 'embed') { loadEmbed(); return; }
     if (!bbox) return;
     const variable = document.getElementById('var-select').value;
     const source = sourceSel.value;
@@ -450,6 +575,8 @@
 
   function renderScan(data) {
     overlay.clearLayers();
+    removeRadar();
+    removeSatellite();
     const {min, max, cell_h, cell_w, cells, unit, label} = data;
     const range = max - min || 1;
     const opacity = parseFloat(document.getElementById('opacity-select').value);

@@ -143,6 +143,52 @@ DATA_SOURCES: Dict[str, dict] = {
         ),
     },
 
+    # MET Norway — bağımsız anahtarsız tahmin kaynağı (Open-Meteo dışı).
+    "metno_forecast": {
+        "id": "metno_forecast",
+        "label": "MET Norway (yr.no) tahmini",
+        "section": "forecast", "model": None,
+        "min_cell_deg": 0.045,  # ~5 km tahmini
+        "variables": [
+            "temperature_2m", "relative_humidity_2m", "precipitation",
+            "wind_speed_10m", "pressure_msl", "cloud_cover",
+        ],
+        **_row(
+            provider="MET Norway / Norwegian Meteorological Institute (api.met.no)",
+            kind_label="Atmosfer modeli (kuzey/deniz ağırlıklı)",
+            backend="metno", via="MET Norway", mode="grid",
+            measures="Sıcaklık, nem, yağış (1 saatlik), rüzgâr hızı, basınç, bulutluluk.",
+            resolution="~5–10 km ızgarası (varies by region)",
+            cell_area="Her değer MET Norway modelinin ızgara hücresi ortalamasıdır; Open-Meteo'dan bağımsız bir model.",
+            coverage="Küresel (okyanus/kuzey enlemlerinde daha iyi)",
+            update_freq="Saatlik",
+            caveat="Kullanıcı-Agent gerekir (met.no politikası). UV/hissedilen sıcaklık vermez; rüzgâr m/s'den km/h çevrilir.",
+        ),
+    },
+
+    # 7Timer! — NOAA GFS tabanlı anahtarsız tahmin.
+    "seventimer_forecast": {
+        "id": "seventimer_forecast",
+        "label": "7Timer! (GFS tabanlı)",
+        "section": "forecast", "model": None,
+        "min_cell_deg": 0.09,  # ~10 km
+        "variables": [
+            "temperature_2m", "relative_humidity_2m", "precipitation",
+            "wind_speed_10m", "cloud_cover",
+        ],
+        **_row(
+            provider="7Timer! (www.7timer.info)",
+            kind_label="NOAA GFS tabanlı tahmin",
+            backend="seventimer", via="7Timer!", mode="grid",
+            measures="Sıcaklık, nem, yağış, rüzgâr hızı, bulutluluk.",
+            resolution="~10–20 km ızgara",
+            cell_area="Her değer 7Timer'ın GFS tabanlı ızgara hücresi ortalamasıdır; Open-Meteo GFS'inden bağımsız bir kaynak.",
+            coverage="Küresel",
+            update_freq="6 saatte bir (GFS init)",
+            caveat="Basınç, hissedilen sıcaklık ve UV vermez. Rüzgâr yönü metin (N/SW) döner, hızı m/s'den km/h çevrilir. Yağış miktarı kategorik/integer olabilir.",
+        ),
+    },
+
     # ----- Hava kalitesi modelleri (anahtarsız, CAMS üzerinden) -----
     "aq_cams_europe": {
         "id": "aq_cams_europe",
@@ -372,6 +418,45 @@ DATA_SOURCES: Dict[str, dict] = {
         ),
     },
 
+    # ----- Görsel / nokta overlay kaynaklar (sayısal ızgara değil) -----
+    # USGS Deprem API — küresel, keyless GeoJSON; haritada daire marker olarak
+    # gösterilir, çizme/alan seçme ZORUNLU değil.
+    "usgs_earthquakes": {
+        "id": "usgs_earthquakes",
+        "label": "USGS Depremler (son 1 saat)",
+        "section": None, "model": None, "min_cell_deg": None,
+        **_row(
+            provider="USGS Earthquake Hazards Program",
+            kind_label="Gerçek deprem gözlemleri (nokta)",
+            kind="station", status="integrated", backend="usgs", via="USGS", mode="points",
+            measures="Büyüklük (magnitude), derinlik, zaman, konum.",
+            resolution="Noktasal (epicenter)",
+            cell_area="Her nokta bir depremin merkez üssünü gösterir; ızgara ortalaması değil, gerçek gözlem.",
+            coverage="Küresel",
+            update_freq="Dakikalık",
+            caveat="Yalnızca algılanan depremler; çok küçük/derin/okyanus ortası olaylar eksik olabilir. Alan tarama yapmaz; haritada nokta marker gösterir.",
+        ),
+    },
+
+    # EUMETSAT Meteosat 0° full disk uydu görüntüsü — keyless JPG; haritada
+    # image overlay olarak gösterilir, çizme/alan seçme ZORUNLU değil.
+    "eumetsat_meteosat": {
+        "id": "eumetsat_meteosat",
+        "label": "EUMETSAT Meteosat uydu görüntüsü",
+        "section": None, "model": None, "min_cell_deg": None,
+        **_row(
+            provider="EUMETSAT (Meteosat Second Generation, 0° full disk)",
+            kind_label="Gerçek uydu görüntüsü (image overlay)",
+            kind="satellite", status="integrated", backend="eumetsat", via="EUMETSAT", mode="image",
+            measures="Doğal renk RGB (gündüz) / IR 10.8 µm (gece).",
+            resolution="Full disk (~3 km piksel, 3712×3712 yerine web için düşük çözünürlü)",
+            cell_area="Tam diskin bir kısmı — Kıbrıs ve Akdeniz görünür. Görsel overlay; sayısal tarama/ızgara değil.",
+            coverage="Afrika/Avrupa/Ortadoğu (Meteosat 0° full disk)",
+            update_freq="~15–60 dk (ürüne göre)",
+            caveat="EUMETSAT 'latest image' URL'leri doğrudan erişime açık ama aşırı poll yapılmamalı (~30 dk). Görüntü küresel projeksiyondadır, haritaya image overlay olarak yerleştirilir.",
+        ),
+    },
+
     # ----- Alternatif kaynaklar (bilgi amaçlı, anahtar/entegrasyon gerekir) -----
     "openaq": {
         "id": "openaq",
@@ -421,6 +506,73 @@ DATA_SOURCES: Dict[str, dict] = {
             caveat="Yalnızca yağış; diğer değişkenler yok. Kaynak verisi ayrıştırma (grib/geojson) gerekir.",
         ),
     },
+
+    # Ek dışarıda bırakılan public API kaynaklar (mimari/region/auth uymadığı
+    # için bilgi amaçlı; tarama için seçilemez).
+    "noaa_goes": {
+        "id": "noaa_goes",
+        "label": "NOAA GOES uydu görüntüsü — bilgi",
+        "section": None, "model": None, "min_cell_deg": None,
+        **_row(
+            provider="NOAA/NESDIS GOES-East/West",
+            kind_label="Gerçek uydu görüntüsü (bilgi)",
+            kind="satellite", status="external", backend=None, via="NOAA GOES",
+            measures="Doğal renk, infrared, su buharı bantları.",
+            resolution="~0.5–2 km (banta göre)",
+            cell_area="GOES 'ne' sektörü Atlantik/ABD doğu kıyısını kapsar; Kıbrıs'ı göstermez. Full Disk küresel ama çok kaba (~10 km).",
+            coverage="GOES-East/West görüş alanı (Amerika/Atlantik/Pasifik)",
+            update_freq="10–15 dk",
+            caveat="Kıbrıs/Akdeniz için EUMETSAT Meteosat entegre edildi; NOAA GOES bilgi amaçlıdır. Doğrudan image URL sector bazlıdır.",
+        ),
+    },
+    "blitzortung_lightning": {
+        "id": "blitzortung_lightning",
+        "label": "Blitzortung yıldırım — bilgi",
+        "section": None, "model": None, "min_cell_deg": None,
+        **_row(
+            provider="Blitzortung.org / LightningMaps.org",
+            kind_label="Gerçek yıldırım gözlemi (bilgi)",
+            kind="station", status="external", backend=None, via="Blitzortung",
+            measures="Yıldırım düşme zamanı, konum, polarite, akım.",
+            resolution="Noktasal (~km çözünürlük)",
+            cell_area="Her nokta bir yıldırım düşmesini gösterir; gerçek gözlem.",
+            coverage="Detektör ağı olan bölgeler (Avrupa/Akdeniz kapsamlı)",
+            update_freq="Gerçek zamanlı (sn düzeyinde)",
+            caveat="Keyless açık HTTP/GeoJSON endpoint yok; protected HTTP veya websocket gerektirir. Ticari kullanım yasak. Entegrasyon için participant hesabı veya kendi websocket-GeoJSON proxy'si gerekir.",
+        ),
+    },
+    "windy_embed": {
+        "id": "windy_embed",
+        "label": "Windy embed — bilgi",
+        "section": None, "model": None, "min_cell_deg": None,
+        **_row(
+            provider="Windy.com",
+            kind_label="Harita embed / interaktif hava haritası (bilgi)",
+            kind="satellite", status="external", backend=None, via="Windy",
+            measures="Rüzgâr, sıcaklık, dalga, yağış, bulut katmanları.",
+            resolution="Model/uydu karışımı",
+            cell_area="Windy interaktif haritası; doğrudan veri değil, görsel.",
+            coverage="Küresel",
+            update_freq="Model güncellemelerine göre",
+            caveat="Embed/iFrame kullanımı Windy politikasına tabi; doğrudan entegrasyon için resmi API anahtarı veya embed izni gerekir. Bilgi amaçlı harici bağlantı.",
+        ),
+    },
+    "sunrise_sunset": {
+        "id": "sunrise_sunset",
+        "label": "Sunrise-Sunset.org — bilgi",
+        "section": None, "model": None, "min_cell_deg": None,
+        **_row(
+            provider="Sunrise-Sunset.org",
+            kind_label="Güneş doğuş/batış ve alacakaranlık (bilgi)",
+            kind="station", status="external", backend=None, via="Sunrise-Sunset.org",
+            measures="Güneş doğuş/batış, öğle, gece yarım, sivil/askeri/astronomik alacakaranlık, golden hour.",
+            resolution="Noktasal (lat/lon)",
+            cell_area="Seçilen noktanın günlük güneş hesaplaması.",
+            coverage="Küresel",
+            update_freq="Günlük",
+            caveat="Open-Meteo zaten sunrise/sunset veriyor; bu kaynak ek twilight/golden hour detayı sunar. Tek nokta sorgusu; ızgara tarama yapmaz.",
+        ),
+    },
 }
 
 
@@ -430,10 +582,18 @@ def get(source_id: str) -> dict | None:
 
 
 def variables_for(source_id: str) -> List[str]:
-    """Bir kaynağin tarayabildiği değişken anahtarlarını döndürür
-    (external kaynaklar için boş)."""
+    """Bir kaynağin tarayabildiği değişken anahtarlarını döndürür.
+    Kaynak tanımında açıkça `variables` listesi varsa onu döndürür; yoksa
+    bölümün değişkenlerini döndürür. External kaynaklar için boş.
+    Böylece aynı bölümdeki farklı backend'ler (örn. MET Norway, 7Timer)
+    yalnızca sundukları değişkenleri gösterebilir."""
     src = DATA_SOURCES.get(source_id)
-    if not src or not src.get("section"):
+    if not src:
+        return []
+    explicit = src.get("variables")
+    if explicit is not None:
+        return list(explicit)
+    if not src.get("section"):
         return []
     return SECTION_VARS.get(src["section"], [])
 

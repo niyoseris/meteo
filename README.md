@@ -49,6 +49,9 @@ rakımı tek yerde gösterir; konumu bir haritada işaretler; en altta ham JSON.
 | POST | `/api/compare` | `points:[{name,lat,lon}, ...]` (≥2) — çok nokta karşılaştırma |
 | POST | `/api/analyze` | `lat`, `lon` — hava kalitesi uzaysal gradyan analizi |
 | POST | `/api/scan` | `bbox:{north,south,east,west}`, `source`, `variable`, `grid?` — alan tarama |
+| GET | `/api/earthquakes` | `minlat`,`maxlat`,`minlon`,`maxlon`,`minmag?`,`hours?` — USGS deprem noktaları |
+| GET | `/api/satellite` | `product?` — EUMETSAT Meteosat latest image URL |
+| GET | `/api/rainviewer` | RainViewer radar frame listesi |
 
 `sections` virgülle ayrılmış liste: `forecast,air_quality,marine,flood,elevation`
 (boş bırakılırsa `all`).
@@ -110,6 +113,8 @@ olmayan veriyi önler).
 | `weatherapi_aq` | weather-api.site | ~20 km AQ tahmini | sayısal ızgara | PM/AQ/UV keyless |
 | `eris_current` | Eris (OpenWeatherMap proxy) | ~9–25 km | sayısal ızgara | yalnızca anlık hava |
 | `wttrin_current` | wttr.in (JSON) | ~9–25 km | sayısal ızgara | `?format=j1`, keyless |
+| `metno_forecast` | MET Norway (yr.no) | ~5–10 km | sayısal ızgara | bağımsız tahmin modeli |
+| `seventimer_forecast` | 7Timer! (GFS) | ~10–20 km | sayısal ızgara | 16 güne kadar GFS tahmini |
 
 **İklim / enerji (anahtarsız, günlük ortalama)**:
 
@@ -117,9 +122,22 @@ olmayan veriyi önler).
 | --- | --- | --- | --- |
 | `nasa_power_daily` | NASA POWER | ~56 km reanalysis | günlük ort/max sıcaklık, yağış, güneş radyasyonu, yüzey toprak nemi |
 
+**Görsel / nokta overlay kaynaklar (sayısal tarama değil; haritada doğrudan gösterilir, alan çizme zorunlu değil)**:
+
+| Kaynak | Sağlayıcı | Mod | Açıklama |
+| --- | --- | --- | --- |
+| `usgs_earthquakes` | USGS | nokta marker | Son 24 saat depremler; büyüklük → daire boyutu, derinlik → renk. `/api/earthquakes` |
+| `eumetsat_meteosat` | EUMETSAT | image overlay | Meteosat 0° full disk latest image. `/api/satellite` |
+| `rainviewer` | RainViewer | radar tile | Zaten yukarıda listelendi; geçmiş + nowcast. |
+
 > NASA POWER verileri **dün veya daha gerideki günün ortalamasıdır**; anlık değil,
 > ~0.5° reanalysis ızgarasındır. Uygulama son 30 günde geriye doğru ilk dolu
 > değeri otomatik seçer.
+
+> **Değişken listesi artık kaynağa göre filtrelenir:** Bir kaynak seçildiğinde
+> açılır listede yalnızca o kaynağın sunduğu değişkenler görünür. Örneğin
+> `seventimer_forecast` basınç/hissedilen sıcaklık/UV göstermez; `metno_forecast`
+> UV/hissedilen sıcaklık göstermez.
 
 Hücreler Open-Meteo'nun virgülle ayrılmış çoklu koordinat desteğiyle **batch**
 çekilir (tek istekte 100 nokta) → ince ızgaralar saniyeler içinde. DEM gibi

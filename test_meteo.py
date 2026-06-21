@@ -641,6 +641,109 @@ def test_scan_nasa_power_backend(monkeypatch):
     assert all(cell["value"] == 3.1 for cell in data["cells"])
 
 
+def test_usgs_earthquakes_endpoint(monkeypatch):
+    """/api/earthquakes USGS GeoJSON proxy'si — bbox + minmag + hours ile."""
+    import app as appmod
+    captured = {}
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["url"] = url
+        captured["params"] = params
+        return _FakeResp({
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "geometry": {"type": "Point", "coordinates": [33.4, 35.2, 10.0]},
+                 "properties": {"mag": 4.2, "place": "Test deprem", "time": 1750436335000, "url": "http://example.com"}},
+                {"type": "Feature", "geometry": {"type": "Point", "coordinates": [33.5, 35.3, 60.0]},
+                 "properties": {"mag": 3.1, "place": "Test deprem 2", "time": 1750436336000, "url": "http://example.com"}},
+            ],
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.get("/api/earthquakes?minlat=34&maxlat=36.5&minlon=32&maxlon=35.5&minmag=2&hours=24")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["count"] == 2
+    assert data["features"][0]["properties"]["mag"] == 4.2
+    assert data["features"][0]["geometry"]["coordinates"][2] == 10.0  # depth
+    assert captured["params"]["format"] == "geojson"
+    assert captured["params"]["minmagnitude"] == 2.0
+
+
+def test_scan_metno_backend(monkeypatch):
+    """MET Norway backend'i — locationforecast/2.0/compact."""
+    import app as appmod
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        assert "api.met.no" in url
+        return _FakeResp({
+            "properties": {
+                "timeseries": [{
+                    "time": "2026-06-21T15:00:00Z",
+                    "data": {
+                        "instant": {"details": {
+                            "air_temperature": 28.5, "relative_humidity": 55.0,
+                            "wind_speed": 4.0, "air_pressure_at_sea_level": 1012.0,
+                            "cloud_area_fraction": 25.0,
+                        }},
+                        "next_1_hours": {"details": {"precipitation_amount": 1.2}},
+                    },
+                }],
+            },
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                  "source": "metno_forecast", "variable": "temperature_2m", "grid": 3})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["source"]["backend"] == "metno"
+    assert all(cell["value"] == 28.5 for cell in data["cells"])
+    # rüzgâr m/s → km/h
+    r2 = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                    "source": "metno_forecast", "variable": "wind_speed_10m", "grid": 3})
+    assert all(abs(cell["value"] - 14.4) < 0.01 for cell in r2.get_json()["cells"])
+
+
+def test_satellite_endpoint():
+    """/api/satellite EUMETSAT URL döndürür; harici HTTP çağrısı yapmaz."""
+    import app as appmod
+    c = appmod.app.test_client()
+    r = c.get("/api/satellite?product=ir108")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["url"].startswith("https://eumetview.eumetsat.int/static-images/latestImages/")
+    assert "IR108" in data["url"]
+    assert data["attribution"] == "EUMETSAT"
+    assert data["bounds"] == [[-78.0, -78.0], [78.0, 78.0]]
+    assert "full disk" in data["coverage"].lower()
+    assert "çizme" in data["note"].lower() or "alan" in data["note"].lower()
+
+
+def test_scan_seventimer_backend(monkeypatch):
+    """7Timer! backend'i — GFS tabanlı JSON tahmin."""
+    import app as appmod
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        assert "7timer" in url
+        return _FakeResp({
+            "product": "civil", "init": "2026062106",
+            "dataseries": [{
+                "timepoint": 3, "temp2m": 27, "rh2m": "35%", "prec_amount": 2,
+                "cloudcover": 3, "wind10m": {"direction": "N", "speed": 2},
+            }],
+        })
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+    c = appmod.app.test_client()
+    r = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                  "source": "seventimer_forecast", "variable": "temperature_2m", "grid": 3})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["source"]["backend"] == "seventimer"
+    assert all(cell["value"] == 27.0 for cell in data["cells"])
+    # bulut 3/9 oktal → %
+    r2 = c.post("/api/scan", json={"bbox": {"north": 36.0, "south": 35.9, "east": 34.0, "west": 33.9},
+                                    "source": "seventimer_forecast", "variable": "cloud_cover", "grid": 3})
+    assert all(abs(cell["value"] - 33.33) < 0.01 for cell in r2.get_json()["cells"])
+
+
 def test_scan_radar_mode_rejected():
     """RainViewer radar modu /api/scan'dan sayısal tarama vermez."""
     import app as appmod

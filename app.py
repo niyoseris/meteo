@@ -308,6 +308,10 @@ def _fetch_cells(src, variable, points):
         return _fetch_wttrin(variable, points)
     if backend == "nasa_power":
         return _fetch_nasa_power(variable, points)
+    if backend == "metno":
+        return _fetch_metno(variable, points)
+    if backend == "seventimer":
+        return _fetch_seventimer(variable, points)
     return _fetch_openmeteo(src.get("section"), src.get("model"), variable, points)
 
 
@@ -583,6 +587,109 @@ def _fetch_nasa_power(variable, points):
                 if val is not None and val != -999.0:
                     out[i] = float(val)
                     return
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(fetch_one, range(len(points))))
+    return out
+
+
+def _fetch_metno(variable, points):
+    """MET Norway locationforecast/2.0/compact — keyless; User-Agent zorunlu."""
+    out: List[Optional[float]] = [None] * len(points)
+    field_map = {
+        "temperature_2m": ("instant", "air_temperature"),
+        "relative_humidity_2m": ("instant", "relative_humidity"),
+        "wind_speed_10m": ("instant", "wind_speed"),
+        "pressure_msl": ("instant", "air_pressure_at_sea_level"),
+        "cloud_cover": ("instant", "cloud_area_fraction"),
+        "precipitation": ("next_1_hours", "precipitation_amount"),
+    }
+    mapping = field_map.get(variable)
+    if not mapping:
+        return out
+    section, key = mapping
+
+    def fetch_one(i):
+        lat, lon = points[i]
+        try:
+            r = requests.get(
+                "https://api.met.no/weatherapi/locationforecast/2.0/compact",
+                params={"lat": round(lat, 4), "lon": round(lon, 4)},
+                timeout=15,
+                headers={"User-Agent": "meteo/0.1.0 (github.com/niyoseris/meteo)"},
+            )
+            r.raise_for_status()
+            data = r.json() or {}
+            ts = (data.get("properties") or {}).get("timeseries") or []
+            if not ts:
+                return
+            details = ts[0].get("data", {}).get(section, {}).get("details") or {}
+            val = details.get(key)
+            if val is not None:
+                out[i] = float(val)
+                if variable == "wind_speed_10m":
+                    out[i] = out[i] * 3.6
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(fetch_one, range(len(points))))
+    return out
+
+
+def _fetch_seventimer(variable, points):
+    """7Timer! — GFS tabanlı, keyless; JSON çıkışı."""
+    out: List[Optional[float]] = [None] * len(points)
+    field_map = {
+        "temperature_2m": "temp2m",
+        "relative_humidity_2m": "rh2m",
+        "wind_speed_10m": ("wind10m", "speed"),
+        "precipitation": "prec_amount",
+        "cloud_cover": "cloudcover",
+    }
+    mapping = field_map.get(variable)
+    if not mapping:
+        return out
+
+    def _parse_rh(x):
+        if isinstance(x, (int, float)):
+            return float(x)
+        if isinstance(x, str):
+            return float(x.replace("%", "").strip()) if "%" in x else None
+        return None
+
+    def fetch_one(i):
+        lat, lon = points[i]
+        try:
+            r = requests.get(
+                "https://www.7timer.info/bin/api.pl",
+                params={"lon": round(lon, 4), "lat": round(lat, 4),
+                        "product": "civil", "output": "json"},
+                timeout=15,
+                allow_redirects=True,
+            )
+            r.raise_for_status()
+            data = r.json() or {}
+            ds = data.get("dataseries") or []
+            if not ds:
+                return
+            cell = ds[0]  # en yakın zaman noktası
+            if variable == "relative_humidity_2m":
+                val = _parse_rh(cell.get(mapping))
+            elif variable == "wind_speed_10m":
+                val = cell.get(mapping[0], {}).get(mapping[1])
+                if val is not None:
+                    val = float(val) * 3.6
+            elif variable == "cloud_cover":
+                val = cell.get(mapping)
+                if val is not None:
+                    val = float(val) * 100.0 / 9.0  # 0-9 oktal → %
+            else:
+                val = cell.get(mapping)
+            if val is not None:
+                out[i] = float(val)
         except Exception:
             pass
 
@@ -953,6 +1060,90 @@ def api_rainviewer():
         "frames": frames,
         "coverage_url": f"{host}{coverage}/256/{{z}}/{{x}}/{{y}}/0/0_0.png" if coverage else None,
         "attribution": "RainViewer",
+    })
+
+
+@app.route("/api/earthquakes")
+def api_earthquakes():
+    """USGS deprem verisi (anahtarsız GeoJSON) — son N saat/bbox içindeki
+    depremleri döndürür. Varsayılan Kıbrıs çevresi, son 24 saat, min mag 2.0.
+
+    Parametreler: minlat, maxlat, minlon, maxlon, minmag, hours
+    Dönüş: GeoJSON FeatureCollection benzeri {type, features:[{geometry, properties}]}
+    """
+    from datetime import datetime, timedelta, timezone
+
+    minlat = request.args.get("minlat", default=34.0, type=float)
+    maxlat = request.args.get("maxlat", default=36.5, type=float)
+    minlon = request.args.get("minlon", default=32.0, type=float)
+    maxlon = request.args.get("maxlon", default=35.5, type=float)
+    minmag = request.args.get("minmag", default=2.0, type=float)
+    hours = request.args.get("hours", default=24, type=int)
+
+    start = (datetime.now(timezone.utc) - timedelta(hours=max(1, hours))).isoformat()
+    url = "https://earthquake.usgs.gov/fdsnws/event/1/query"
+    params = {
+        "format": "geojson",
+        "starttime": start,
+        "minlatitude": minlat,
+        "maxlatitude": maxlat,
+        "minlongitude": minlon,
+        "maxlongitude": maxlon,
+        "minmagnitude": minmag,
+        "limit": 10000,
+        "orderby": "time",
+    }
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json() or {}
+    except Exception as exc:
+        return _api_error(f"USGS verisi alınamadı: {exc}", 502)
+
+    features = data.get("features") or []
+    # İstemciye sadece gerekli alanlar; ağırlığı azaltmak için filtrele.
+    out = []
+    for f in features:
+        geom = f.get("geometry") or {}
+        props = f.get("properties") or {}
+        coords = geom.get("coordinates") or [None, None, None]
+        out.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": coords},
+            "properties": {
+                "mag": props.get("mag"),
+                "place": props.get("place"),
+                "time": props.get("time"),
+                "depth": coords[2] if len(coords) > 2 else None,
+                "url": props.get("url"),
+            },
+        })
+    return jsonify({"type": "FeatureCollection", "features": out, "count": len(out)})
+
+
+@app.route("/api/satellite")
+def api_satellite():
+    """EUMETSAT Meteosat 0° full disk latest image URL'si — keyless.
+
+    Parametreler:
+      product: "natural" (varsayılan), "ir108", "ir108color", "vis006"
+    Dönüş: {url, bounds:[southWest,northEast], attribution, coverage, note}
+    """
+    product = request.args.get("product", "natural")
+    product_map = {
+        "natural": "RGBNatColour",
+        "ir108": "IR108",
+        "ir108color": "IR108Color",
+        "vis006": "VIS006",
+    }
+    p = product_map.get(product, "RGBNatColour")
+    url = f"https://eumetview.eumetsat.int/static-images/latestImages/EUMETSAT_MSG_{p}_FullResolution.jpg"
+    return jsonify({
+        "url": url,
+        "bounds": [[-78.0, -78.0], [78.0, 78.0]],  # yaklaşık full disk
+        "attribution": "EUMETSAT",
+        "coverage": "Meteosat 0° full disk (Afrika/Avrupa/Ortadoğu)",
+        "note": "Full disk görüntüsüdür; kenarlarda küresel projeksiyon bozulması olabilir. Çizme/alan seçme gerekmez.",
     })
 
 
