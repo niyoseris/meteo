@@ -200,7 +200,8 @@ def scan_page():
             "update_freq": meta["update_freq"],
             "status": meta["status"],
             "caveat": meta["caveat"],
-            "variables": [{"key": k, "label": var_by_key[k]["label"], "unit": var_by_key[k]["unit"]}
+            "variables": [{"key": k, "label": var_by_key[k]["label"],
+                           "unit": var_by_key[k]["unit"], "section": var_by_key[k]["section"]}
                            for k in var_keys if k in var_by_key],
         })
     return render_template("scan.html", sources=sources, variables=SCAN_VARIABLES,

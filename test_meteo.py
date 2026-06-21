@@ -868,5 +868,8 @@ def test_scan_page_sources_include_variables():
         keys = {v["key"] for v in src["variables"]}
         expected = set(datasources.variables_for(sid))
         assert keys == expected, f"{sid}: variables uyuşmuyor {keys} vs {expected}"
+        # her değişkenin JS gruplaması için section alanı da gelmeli
+        for v in src["variables"]:
+            assert v.get("section"), f"{sid} → {v['key']}: section eksik"
     # Açılış kaynağı (forecast_best) sıcaklık değişkeni içermeli
     assert "temperature_2m" in {v["key"] for v in by_id["forecast_best"]["variables"]}
